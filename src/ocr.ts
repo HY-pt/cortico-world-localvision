@@ -1,22 +1,17 @@
 /**
- * 本机原生 OCR（不依赖任何"视觉小模型"，不下载权重）。
- *  - Windows：调用系统内置的 Windows.Media.Ocr（WinRT，Windows 10/11 自带，免安装）。
- *  - macOS / 其它：尝试系统已装的 tesseract（常见），否则返回空。
+ * 本机 OCR 后端：tesseract.js（纯 Node / WASM）。
  *
- * 返回归一化(0..1)的文字框；坐标相对「当前图」（全屏或裁剪图），
- * 由调用方结合 CaptureTransform.region 还原到屏幕绝对位置。
+ * 为什么不用系统 WinRT OCR：它要走 PowerShell + .NET 反射，杀软（卡巴等）会直接拦掉；
+ * tesseract.js 在 Node 进程内跑 WASM，不启外部进程、不落 exe，跨 Windows/macOS/Linux 一致。
  *
- * 这样默认轻量模式下，桌宠就能"读"屏幕上的文字（用于 see / 点击文字锚定），
- * 而完全不调用任何云端或本地视觉大模型 —— 契合"本地 OCR + 坐标，不要视觉模型"的定位。
+ * 语言数据（traineddata）首次使用时下载到 `cacheDir`，之后复用；默认 chi_sim（中英混排）。
+ * 返回归一化(0..1)文字框；调用方用截图的 scaledWidth/Height 乘回去，得到与 `pet_cua_*`
+ * 完全一致的「截图像素坐标」。
  */
-
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { writeFile, readFile } from 'node:fs/promises';
+import { createWorker, type Worker } from 'tesseract.js';
+import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-const exec = promisify(execFile);
 
 export interface OcrWord {
   text: string;
@@ -24,139 +19,137 @@ export interface OcrWord {
   y: number; // 左上归一化 y (0-1)
   w: number; // 宽归一化 (0-1)
   h: number; // 高归一化 (0-1)
-  line: number; // 行号（拼接可读文本用）
+  line: number;
 }
 
-/** 解析 PNG IHDR 拿到宽高（用于 tesseract 归一化）。 */
-function pngSize(b64: string): { w: number; h: number } {
-  const buf = Buffer.from(b64, 'base64');
-  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+export interface OcrItem {
+  text: string;
+  /** 中心坐标（截图像素，与 pet_cua_* 同一空间） */
+  cx: number;
+  cy: number;
+  line: number;
 }
 
-export async function ocrNative(imageB64: string): Promise<OcrWord[]> {
-  const plat = process.platform;
-  if (plat === 'win32') return ocrWinRt(imageB64);
-  return ocrTesseract(imageB64);
+export interface OcrOptions {
+  /** tesseract 语言：chi_sim、eng、chi_sim+eng；留空 = chi_sim。 */
+  lang?: string;
+  /** traineddata 缓存目录；默认系统临时目录。 */
+  cacheDir?: string;
+  /** 截图缩放后的宽高（坐标系基准）。 */
+  width: number;
+  height: number;
 }
 
-/** 把 OCR 文字框拼成可读的多行文本（see 工具默认用）。 */
-export function ocrToText(words: OcrWord[]): string {
-  if (!words.length) return '';
-  let out = '';
-  let lastLine = -1;
-  for (const w of words) {
-    if (w.line !== lastLine) {
-      out += '\n';
-      lastLine = w.line;
-    }
-    out += w.text + ' ';
-  }
-  return out.replace(/\n\s+/g, '\n').trim();
+/** 语言码归一化：WinRT 的 zh-Hans 与 tesseract 的 chi_sim 都接受。 */
+export function tesseractLang(lang?: string): string {
+  const l = (lang || '').trim();
+  if (!l) return 'eng';
+  const k = l.toLowerCase();
+  if (k === 'zh' || k.startsWith('zh-hans') || k.startsWith('zh-cn') || k.startsWith('zh-sg')) return 'chi_sim';
+  if (k.startsWith('zh-hant') || k.startsWith('zh-tw') || k.startsWith('zh-hk')) return 'chi_tra';
+  if (k === 'en' || k.startsWith('en-')) return 'eng';
+  if (k === 'ja' || k.startsWith('ja-')) return 'jpn';
+  if (k === 'ko' || k.startsWith('ko-')) return 'kor';
+  return l;
 }
 
-/** 在 OCR 结果里查找包含 query 的文字框（先精确后包含）。 */
-export function findWord(words: OcrWord[], query: string): OcrWord | null {
-  const q = query.trim().toLowerCase();
-  if (!q) return null;
-  const hit = words.find((w) => w.text.toLowerCase() === q);
-  if (hit) return hit;
-  return words.find((w) => w.text.toLowerCase().includes(q)) ?? null;
+function langsOf(lang?: string): string {
+  const l = (lang || '').trim();
+  if (!l) return 'chi_sim';
+  if (l.includes('+')) return l;
+  return tesseractLang(l);
 }
 
-// ——— Windows：内置 WinRT OCR ———
-async function ocrWinRt(imageB64: string): Promise<OcrWord[]> {
-  const b64File = join(tmpdir(), `lv-ocr-${Date.now()}.b64`);
-  const outFile = join(tmpdir(), `lv-ocr-${Date.now()}.txt`);
-  await writeFile(b64File, imageB64, 'utf8');
-  const b = b64File.replace(/\\/g, '\\\\').replace(/'/g, "''");
-  const o = outFile.replace(/\\/g, '\\\\').replace(/'/g, "''");
-  const ps = [
-    '$ErrorActionPreference="Stop"',
-    'Add-Type -AssemblyName System.Drawing',
-    `$bytes=[System.Convert]::FromBase64String((Get-Content -Raw '${b}'))`,
-    '$ms=New-Object System.IO.MemoryStream(,$bytes)',
-    '$bmp=New-Object System.Drawing.Bitmap($ms)',
-    '$w=$bmp.Width; $h=$bmp.Height',
-    'try { [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null } catch {}',
-    '$engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()',
-    'if(-not $engine){ try { $engine=[Windows.Media.Ocr.OcrEngine]::TryCreate("en-US") } catch {} }',
-    '$lines=@(("{0} {1}" -f $w,$h))',
-    'if($engine){',
-    '  $stream=New-Object Windows.Storage.Streams.InMemoryRandomAccessStream',
-    '  $dw=New-Object Windows.Storage.Streams.DataWriter($stream)',
-    '  $dw.WriteBytes($bytes)',
-    '  [void]$dw.StoreAsync(); [void]$dw.FlushAsync(); $stream.Seek(0)',
-    '  $task=$engine.RecognizeAsync($stream)',
-    '  [void]$task.AsTask().Wait()',
-    '  $res=$task.GetResults()',
-    '  $li=0',
-    '  foreach($line in $res.Lines){ foreach($word in $line.Words){ $r=$word.BoundingRect; $lines += ("{0}|{1}|{2}|{3}|{4}|{5}" -f ($word.Text -replace \'"\',\' \'),[int]$r.X,[int]$r.Y,[int]$r.Width,[int]$r.Height,$li) }; $li++ }',
-    '}',
-    `$lines -join \`n | Out-File -Encoding ascii '${o}'`,
-  ].join('\n');
+let workerPromise: Promise<Worker> | null = null;
+let workerKey = '';
+
+async function getWorker(langs: string, cachePath: string): Promise<Worker> {
+  const key = `${langs}@${cachePath}`;
+  if (workerPromise && workerKey === key) return workerPromise;
+  workerKey = key;
+  workerPromise = (async () => {
+    await mkdir(cachePath, { recursive: true });
+    return createWorker(langs, 1, { cachePath });
+  })().catch((err) => {
+    workerPromise = null;
+    workerKey = '';
+    throw err;
+  });
+  return workerPromise;
+}
+
+/** 释放 OCR worker（World 停用时调用，回收内存）。 */
+export async function disposeOcr(): Promise<void> {
+  const p = workerPromise;
+  workerPromise = null;
+  workerKey = '';
+  if (!p) return;
   try {
-    await exec('powershell', ['-NoProfile', '-Command', ps]);
-    const txt = await readFile(outFile, 'utf8');
-    const rows = txt.split('\n').map((s) => s.trim()).filter(Boolean);
-    if (rows.length < 1) return [];
-    const [W, H] = rows[0].split(' ').map(Number);
-    if (!W || !H) return [];
-    const words: OcrWord[] = [];
-    for (let i = 1; i < rows.length; i++) {
-      const p = rows[i].split('|');
-      if (p.length < 6) continue;
-      words.push({
-        text: p[0],
-        x: Number(p[1]) / W,
-        y: Number(p[2]) / H,
-        w: Number(p[3]) / W,
-        h: Number(p[4]) / H,
-        line: Number(p[5]) || 0,
-      });
-    }
-    return words;
+    (await p).terminate();
   } catch {
-    return [];
-  } finally {
-    try {
-      await exec('cmd', ['/c', 'del', '/q', b64File, outFile]);
-    } catch {
-      /* ignore */
-    }
+    /* ignore */
   }
 }
 
-// ——— macOS / 其它：tesseract（若已安装）———
-async function ocrTesseract(imageB64: string): Promise<OcrWord[]> {
-  const png = join(tmpdir(), `lv-ocr-${Date.now()}.png`);
-  const base = join(tmpdir(), `lv-ocr-${Date.now()}`);
-  await writeFile(png, Buffer.from(imageB64, 'base64'));
-  const { w: W, h: H } = pngSize(imageB64);
-  try {
-    await exec('tesseract', [png, base, '-l', 'eng', 'tsv']);
-  } catch {
-    return [];
-  }
-  const tsv = await readFile(`${base}.tsv`, 'utf8').catch(() => '');
+export async function ocrNative(imageB64: string, opts: OcrOptions): Promise<OcrWord[]> {
+  const langs = langsOf(opts.lang);
+  const cachePath = opts.cacheDir || join(tmpdir(), 'localvision-tessdata');
+  const worker = await getWorker(langs, cachePath);
+  const { data } = await worker.recognize(Buffer.from(imageB64, 'base64'), {}, { blocks: true, text: true });
+  const W = opts.width;
+  const H = opts.height;
+  if (!W || !H) return [];
+
   const words: OcrWord[] = [];
-  for (const line of tsv.split('\n')) {
-    const cols = line.split('\t');
-    if (cols.length < 12) continue;
-    if (cols[1] !== '5') continue; // 仅取 word 级
-    const left = Number(cols[6]);
-    const top = Number(cols[7]);
-    const width = Number(cols[8]);
-    const height = Number(cols[9]);
-    const text = cols[11];
-    if (!text || !W || !H) continue;
-    words.push({
-      text,
-      x: left / W,
-      y: top / H,
-      w: width / W,
-      h: height / H,
-      line: Number(cols[4]) || 0,
-    });
+  let line = 0;
+  for (const block of (data.blocks ?? []) as any[]) {
+    for (const para of block.paragraphs ?? []) {
+      for (const ln of para.lines ?? []) {
+        for (const w of ln.words ?? []) {
+          const b = w.bbox;
+          if (!b || !w.text) continue;
+          words.push({
+            text: String(w.text),
+            x: b.x0 / W,
+            y: b.y0 / H,
+            w: (b.x1 - b.x0) / W,
+            h: (b.y1 - b.y0) / H,
+            line,
+          });
+        }
+        line++;
+      }
+    }
   }
   return words;
+}
+
+/** 阅读顺序的纯文本（localvision_ocr 用）。 */
+export function ocrToText(words: OcrWord[]): string {
+  if (!words.length) return '';
+  const maxLine = Math.max(...words.map((w) => w.line));
+  const lines: string[] = [];
+  for (let l = 0; l <= maxLine; l++) {
+    const row = words.filter((w) => w.line === l).sort((a, b) => a.x - b.x).map((w) => w.text);
+    if (row.length) lines.push(row.join(' '));
+  }
+  return lines.join('\n');
+}
+
+/** 归一化框 -> 截图像素中心点。 */
+export function ocrItems(words: OcrWord[], W: number, H: number): OcrItem[] {
+  return words.map((w) => ({
+    text: w.text,
+    cx: Math.round((w.x + w.w / 2) * W),
+    cy: Math.round((w.y + w.h / 2) * H),
+    line: w.line,
+  }));
+}
+
+/** 阅读顺序文本 + 每个词的截图像素中心坐标（localvision_see 用）。 */
+export function ocrToLocatedText(words: OcrWord[], W: number, H: number): string {
+  if (!words.length) return '';
+  const reading = ocrToText(words);
+  const located = ocrItems(words, W, H).map((it) => `- ${it.text} @ (${it.cx}, ${it.cy})`).join('\n');
+  return `可见文字(阅读顺序):\n${reading}\n\n关键文字及中心坐标(截图像素):\n${located}`;
 }

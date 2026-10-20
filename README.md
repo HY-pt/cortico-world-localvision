@@ -1,54 +1,59 @@
 # cortico-world-localvision（本地视觉 / LocalVision）
 
-Coopanion / Cortico 的 **World 扩展**，给桌宠提供「屏幕感知 + 点击」能力，把云端 token 压到最低。
+Coopanion / Cortico 的 World 扩展：**只负责「看屏幕」**——在本机把截图 OCR 成文字 + 坐标，默认不把图片发到云端，省掉每帧截图的 token。**点击、打字、按键等操作交给 Coopanion 内置的「电脑操作」**（`pet_cua_*` 工具），本插件不重造引擎。
 
 > 插件名：local vision（本地视觉）｜包名：`cortico-world-localvision`｜契约：`api: 6`
 
-> **想直接装来用？** 推荐装已改造好的 [`HY-pt/cortico-world-cua`](https://github.com/HY-pt/cortico-world-cua)（方式 B，更彻底、且复用你 Coopanion 已填的 Key）。本仓库是这套思路的**独立设计原型 / PoC**。
+---
+
+## 它做什么 / 不做什么
+
+| 做 | 怎么做 |
+|---|---|
+| **看屏** `localvision_see` | 本机截屏 → tesseract.js（WASM）OCR → 返回「文字 + 截图像素坐标」，默认**不上传图片** |
+| **提字** `localvision_ocr` | 同上，只返回纯文本、不含坐标 |
+| **兜底** | 屏幕上没有任何文字（纯图表/图片/视频）时，才把截图作为图片回退给 Coopanion 已配的模型 |
+
+| 不做（用内置 `pet_cua_*`） | 工具 |
+|---|---|
+| 点击 / 移动 / 拖拽 | `pet_cua_click` / `pet_cua_move` / `pet_cua_drag` |
+| 滚动 / 打字 / 按键 | `pet_cua_scroll` / `pet_cua_type` / `pet_cua_key` |
+| 窗口 / 等待 | `pet_cua_windows` / `pet_cua_focus` / `pet_cua_wait` |
+
+> 为什么不做操作：Coopanion 内置的电脑操作（`desktop-pet` 里的 `pet_cua_*`）已经完整可靠，再 fork 一套引擎就是重复造轮子。本插件只补「看屏不上图」这一层。
 
 ---
 
-## 产品定位：轻量优先，视觉兜底可选
+## 为什么能省 token
 
-作为**轻量级桌宠软件**，首要保证是**不卡顿、不烧 token**：
+Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每帧都在变，导致提示词缓存被击穿（实测账单里 8% 的未命中输入占了约 73% 费用），图片 token 本身也贵。
 
-- **默认（轻量模式）完全不调用任何视觉大模型**：
-  - 「看屏」用**本机原生 OCR**（Windows 10/11 内置 WinRT OCR / macOS tesseract），免下载、免模型、快。
-  - 「点击」用**归一化坐标**（Tier2），无模型依赖，永远可用。
-  - => 桌宠不联网传图、不加载模型、不占显存，最流畅。
-- **视觉兜底（Tier3 看图定位）是【可选开关】，默认关闭**：
-  - 仅当 `visionFallbackEnabled = true` **且** 填了 `visionApiBaseUrl` 时才启用；
-  - 它是一个**标准 OpenAI 兼容 `/v1` 端点**——用户可填**本地 Ollama / LM Studio** 或**云端**，代码不硬编码、不假设任何后端在运行。
-  - **Ollama 只是这个通用端点的一个示例，不是必需项**：本仓库默认不调用任何视觉模型，只有你显式打开 `visionFallbackEnabled` 并填 `visionApiBaseUrl` 时才会用到它。
-- **彻底解耦本地模型**：本插件不依赖、不硬编码、不假设 Ollama 在运行。视觉端点只是配置项，填不填、填哪个完全由用户决定。
-
----
-
-## 为什么能降 token
-
-Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧都在变，导致云端输入前缀每轮变化，
-**提示词缓存被击穿**——账单里 8% 的未命中输入占了 73% 成本，且视觉 token 本身很贵。
-
-本插件把"看屏"从"每轮传图"改为"本机文字化 + 归一化坐标"：
+本插件把「看屏」换成：
 
 ```
-轻量模式（默认）：   本机原生 OCR 文字  ·  归一化坐标点击   —— 完全不调用视觉模型
-视觉兜底（可选）：   前两层都失败 -> 截图传视觉端点看图定位 —— 仅在必要时、可配置
+截屏（本机） → tesseract.js OCR（本机） → 文字 + 坐标  →  模型只收文字
 ```
 
-- 屏幕没变时，OCR/描述**几乎不变** → 云端输入前缀稳定 → 缓存持续命中。
-- 云端**收不到任何原始截图**（默认连图片都不截给模型，直接收归一化坐标）→ 视觉 token ≈ 0。
-- 文字比 1280×800 的 JPEG 小几个数量级，即便偶尔未命中也很便宜。
+- 云端收不到原始截图 → 视觉 token ≈ 0；
+- 屏幕没变时文字几乎不变 → 缓存持续命中；
+- 文字比 1280×800 的 JPEG 小几个数量级。
+
+配合把内置 cua 的「操作后附截图」关掉（见下），动作型任务也能稳定省下来。
 
 ---
 
-## 工具
+## 安装
 
-| 工具 | 作用 | 默认（轻量）是否需要模型 | 视觉兜底是否参与 |
-|---|---|---|---|
-| `localvision_see` | 截屏感知：默认用**本机原生 OCR** 把可见文字当"屏幕描述"返回；启用视觉兜底且配端点时改用视觉端点生成更丰富描述。 | 否（本机 OCR） | 可选（描述更丰富） |
-| `localvision_ocr` | 截屏 → **本机原生 OCR** 逐字提取文字。本机无 OCR 且启用视觉兜底时回退到视觉端点 OCR。 | 否（本机 OCR） | 可选（回退） |
-| `localvision_click` | 屏幕点击，坐标归一化(0-1)，本机乘回原生像素，**自适应任意分辨率/DPI/宽高比**。三级兜底：`text`(本机OCR锚定,优先) > `x,y`(归一化回退,始终) > `intent`(看图兜底,默认关)。 | 否（Tier1/Tier2 免模型） | Tier3 参与（默认关） |
+> 前提：Coopanion / Cortico 已装好，并且你打算用内置的「电脑操作」。
+
+1. 拿到代码：`git clone https://github.com/HY-pt/cortico-world-localvision.git`，或下载 ZIP 解压，记住**绝对路径**。
+2. 扩展页 → **手动安装**，填这个绝对路径，确认。
+3. **重启 Coopanion 进程**（所有插件都要重启才载入；扩展页会显示「待重启」）。
+4. 打开 **World 总览**，启用「本地视觉 LocalVision」——新 World 默认是**待命/未激活**状态，需要在这里打开（或写进 bot 的 `declares`）。
+5. 打开 **习惯 → 电脑操作**，确认「使用电脑」「允许操作鼠标和键盘」已打开（这是内置 cua 的开关）。
+6. **强烈建议**：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图。在高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`（或在高级模式的「电脑操作」页关掉对应开关）。
+
+装好后，对话里说「看一眼屏幕」，模型应当走 `localvision_see` 返回文字 + 坐标，而不是 `pet_cua_screenshot` 传图。
 
 ---
 
@@ -56,96 +61,70 @@ Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧�
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `enabled` | `true` | Cortico World 总开关 |
-| `visionFallbackEnabled` | `false` | **视觉兜底显式开关**。必须 `true` 且配了 `visionApiBaseUrl` 才会启用 Tier3 看图定位；**默认关闭**。 |
-| `visionApiBaseUrl` | `''` | 通用视觉端点（OpenAI 兼容 `/v1`）。本地填 `http://127.0.0.1:11434/v1`；云端填其 `/v1`。**空=不用视觉模型**。 |
-| `visionApiKey` | `''` | Bearer Token；本地 Ollama / LM Studio 等留空 |
-| `visionApiModel` | `''` | 模型名：本地如 `minicpm-v2.6` / `qwen2-vl`；云端如 `gpt-4o` |
-| `visionApiTimeoutMs` | `8000` | 单次视觉调用超时（毫秒）；兜底失败即降级、不卡死 |
-| `ocrLang` | `''` | 预留：原生 OCR 语言偏好（当前自动选系统/英文） |
-| `cropPadding` | `0.2` | 两级截图：局部裁剪时围绕 `lastNormPoint` 扩展的归一化半幅（0..0.45）。越小越省，越大越不易漏 |
-| `screenshotMaxWidth` | `1280` | 发给识别引擎的图宽上限。截原生分辨率后**等比缩放**到此上限（只缩不放，不变形） |
-| `screenshotMaxHeight` | `800` | 发给识别引擎的图高上限 |
-
-**轻量模式（默认）**：`visionFallbackEnabled=false` 且 `visionApiBaseUrl=''` → 桌宠只用本机 OCR + 归一化坐标，不加载任何模型、最流畅。
-**视觉兜底模式**：`visionFallbackEnabled=true` + 填好 `visionApiBaseUrl`/`visionApiModel` → 解锁 Tier3 看图定位（及更丰富的 see 描述）。
+| `enabled` | `true` | World 总开关（还要在 World 总览里激活） |
+| `ocrLang` | `''` | OCR 语言：`chi_sim`（中英，默认）、`eng`、`chi_sim+eng` 等；也接受 `zh-Hans` / `en-US` 自动映射 |
+| `screenshotMaxWidth` | `1280` | 截图缩放上限；**要和内置 cua 的 `screenshot.maxWidth` 一致**，坐标才能直接复用 |
+| `screenshotMaxHeight` | `800` | 同上 |
+| `fallbackImage` | `true` | OCR 找不到文字时，是否把截图作为图片回退；`false` = 永不传图 |
 
 ---
 
-## 点击设计（三级兜底 + 两级截图 + 分辨率无关）
+## OCR 后端：tesseract.js（为什么不是系统 OCR）
 
-`localvision_click` 采用三级兜底，全程坐标归一化(0-1)、由本机乘回原生像素，**不受任何分辨率/DPI/宽高比影响**：
-
-### 三级兜底触发逻辑
-
-1. **Tier1 — 本机 OCR 文字锚定（优先，免模型，精度高）**：传入 `text`（如 `"登录"`），本机用**原生 OCR** 在屏幕上定位该文字并点其中心。
-2. **Tier2 — 归一化坐标回退（无模型依赖，最轻量，始终可用）**：传入 `x,y`（0-1），本机直接乘回原生像素点击。
-3. **Tier3 — 终极兜底（看图定位，仅在必要时传图；默认关闭）**：前两级都失败（或只给了 `intent` 但没锚定到），**重新截图**交给视觉端点按自然语言意图（`intent`，缺省复用 `text`）定位中心坐标再点。
-   - 触发条件：`intent` 有值 + `visionFallbackEnabled=true` + 已配置视觉端点。否则自动跳过。
-
-> 关键保护：Tier1 的 OCR 与 Tier3 的看图都带超时与 try/catch；任一层失败都只降级，不会让一次点击调用崩溃或陷入死循环。Tier3 默认关闭，轻量模式下点击只有 Tier1(OCR)+Tier2。
-
-### 两级截图策略（Tier1 / Tier3 的文本/视觉定位共用）
-
-为节约，定位前**先局部裁剪**、失败再全屏：
-
-1. **第一级（节约模式）**：若有上次成功定位/点击的归一化坐标 `lastNormPoint`，围绕它按 `cropPadding` 扩展出一个局部矩形，**只截这一小块**（Windows 直接 `CopyFromScreen` 子矩形；macOS `screencapture -R`）。小块图送识别，token/算力都小。
-2. **第二级（全屏兜底）**：局部识别失败 → 自动降级为**全屏截图**再识别一次。
-
-`cropPadding` 控制裁剪范围大小，**可配置**；范围太小可能漏掉目标（触发全屏兜底，多花一次），太大则省得不多。默认 0.2（约覆盖屏幕 40% 区域）。
-
-### 自适应截图与坐标变换
-
-- 截屏先用**原生物理分辨率**（Windows 已设 `SetHighDpiMode(PerMonitorV2)`，绝不用逻辑像素），再**等比缩放**到
-  `screenshotMaxWidth × screenshotMaxHeight` 上限（只缩不放，保持宽高比**不变形**）。
-- 坐标一律**归一化(0-1)**，与分辨率、DPI、宽高比**完全无关**。
-- `CaptureTransform` 自带 `regionX/Y/W/H`：无论全屏还是局部裁剪，点击还原都按
-  `原生像素 = regionX + 归一化×regionW`（裁剪图也能正确回到屏幕绝对位置）。因此 1080p / 2K / 4K / 3:2 **像素级命中**。
-
-```
-截屏(原生, DPI感知) ──等比缩放──▶ 缩放图 ──▶ 本机OCR/视觉端点 ──▶ 归一化坐标(0-1)
-                                                              │
-云端只见到归一化坐标 / 文字 ──────────────────────────────────┘
-点击时：原生像素 = regionX + 归一化 × regionW（本机执行，坐标永不离开本机）
-```
-
-### 用法示例
-
-```js
-// 默认轻量模式即可：
-see  = localvision_see()          // 本机 OCR 文字描述
-click= localvision_click({ text: '登录' })   // Tier1 本机 OCR 锚定（先局部裁剪，失败全屏）
-click= localvision_click({ x: 0.5, y: 0.3 }) // Tier2 归一化坐标回退
-```
-
-> 多屏：截图默认主屏，可用 `localvision_see({ monitor: N })`（0-based）指定屏；点击沿用该基准。
+- 试过 Windows 自带的 WinRT OCR，但它要用 **PowerShell + .NET 反射** 调 WinRT，**卡巴斯基等杀软会直接拦掉**（本机实测）。
+- 现在用 **tesseract.js 7（纯 Node / WASM）**：不启外部进程、不加载反射、不落 exe，Windows / macOS / Linux 一致，杀软友好。
+- 语言数据首次使用时下载到部署数据目录的 `localvision-tessdata/`，之后复用：`chi_sim` 约 2.5 MB、`eng` 约 5 MB。
+- 不需要安装 tesseract，也不需要任何视觉大模型。
 
 ---
 
-## 怎么真正省到钱（集成方式 · 已落地）
+## 坐标为什么能直接给 `pet_cua_*`
 
-本仓库（`cortico-world-localvision`）是这套思路的**独立设计原型 / PoC**（一个 `api: 6` 的 World，自带 `localvision_see/ocr/click` 三件套，零模型依赖、通用视觉端点可选）。
+两边都用同一套等比缩放：`min(maxW/w, maxH/h, 1)`，默认 `1280×800`，只缩不放。
 
-要把"云端不收 cua 截图"真正落地到 Coopanion，**推荐直接装已改造好的 cua 分支**（更彻底、且复用你已填的 Key，无需第二遍配置）：
-
-- **✅ 方式 B（已落地，推荐）**：[`HY-pt/cortico-world-cua`](https://github.com/HY-pt/cortico-world-cua) —— Fork 原版 `cortico-world-cua`，在 `cua_screenshot` 链路里加了本机 OCR 拦截 + 两级截图 + 复用 Coopanion 已配视觉 API 的兜底。安装与配置见该仓库 README。
-- 方式 A（本地代理在 API 边界替换截图）：指单独起一个代理进程，在 API 出口把截图换成文字，**不在本仓库内**，需自行搭建。它和本仓库的 `localvision` World 不是一回事——后者是 in-Cortico 的独立实现，不经任何外部代理。
-
-> 结论：**以方式 B（cua 分支）为主**。本 `localvision` 仓库保留作为思路原型与独立 World（若你想要一套不依赖 cua 的 `localvision_*` 工具集可直接启用，它不需要任何外部代理）。
+- 同一显示器下，`localvision_see` 返回的截图像素 = `pet_cua_click` 要的截图像素；
+- 多屏时给 `localvision_see` 传 `display`（1 起，1 = 最左），与 `pet_cua_*` 用同一个编号；
+- 如果你改过任一边的 `maxWidth/maxHeight`，两边要改成一样。
 
 ---
 
-## 开发与安装
+## 工具
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；没文字时按 `fallbackImage` 回退图片 |
+| `localvision_ocr` | `display?` | 纯文本（不含坐标、不回退图片） |
+
+---
+
+## 排错
+
+**Q：装了但 World 总览没有？**
+A：先**重启进程**；扩展页显示「待重启」就是还没载入。重启后在 World 总览里手动启用。
+
+**Q：OCR 识别为 0 个字？**
+A：首次使用需要下载语言数据，确认网络可用、`localvision-tessdata/` 可写；中文界面把 `ocrLang` 设为 `chi_sim`。
+
+**Q：模型还是调了 `pet_cua_screenshot` 传图？**
+A：本插件不能强制拦截别的 World 的工具（Cortico 没有 tool-result hook）。靠两层约束：① 本插件的环境提示词明确要求「看屏只用 localvision_see，操作传 `screenshot:false`」；② 把内置 cua 的 `screenshot.afterAction` 关掉。
+
+**Q：坐标点偏了？**
+A：确认 `screenshotMaxWidth/Height` 与内置 cua 一致，并且 `localvision_see` 和 `pet_cua_*` 看的是同一个 `display`。
+
+**Q：卡巴斯基报毒/拦截？**
+A：本插件不启动 PowerShell、不落 exe，只跑 tesseract.js 的 WASM；如果仍被拦，把 `localvision-tessdata/` 与 Node 进程加白名单。
+
+---
+
+## 开发与校验
 
 ```bash
-corepack pnpm install        # 装 cortico 开发依赖（类型/校验用）
-pnpm describe:extension .   # 重新生成 describe.json
-pnpm check:extension .      # 契约与声明校验（应全过）
-node scripts/smoke.mjs      # 验证视觉端点连通性（可选，需填端点；不填则验证本机 OCR 路径）
+npm install                    # 或 pnpm install
+node --experimental-transform-types scripts/describe-extension.ts .   # 生成 describe.json
+node --experimental-transform-types scripts/check-extension.ts .      # 契约校验
 ```
 
-装进 Coopanion / Cortico：扩展页「手动安装」填本目录绝对路径 → 重启 → World 总览启用；
-或在部署 `config.json` 写 `worlds.localvision.enabled = true`。
+装进 Coopanion：扩展页「手动安装」填本目录绝对路径 → 重启 → World 总览启用。
 
 ---
 

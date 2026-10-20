@@ -1,9 +1,9 @@
 {
   "name": "cortico-world-localvision",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "./src/index.ts",
-  "description": "本地视觉 World：截屏在本机由本地视觉模型转成稳定文字，云端只收文字，提升缓存命中、降低 token 消耗。",
+  "description": "本地视觉 World：本机 OCR（tesseract.js/WASM）把屏幕转成文字+坐标，操作交给 Coopanion 内置电脑操作（pet_cua_*），大幅降低截图 token。",
   "keywords": [
     "cortico-world"
   ],
@@ -24,5 +24,8 @@
     "smoke": "node scripts/smoke.mjs",
     "describe:extension": "node --experimental-transform-types scripts/describe-extension.ts",
     "check:extension": "node --experimental-transform-types scripts/check-extension.ts"
+  },
+  "dependencies": {
+    "tesseract.js": "^7.0.0"
   }
 }
