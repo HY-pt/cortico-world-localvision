@@ -3,7 +3,7 @@
   "version": "0.3.0",
   "type": "module",
   "main": "./src/index.ts",
-  "description": "本地视觉 World：在本机截屏后用本机 OCR（tesseract.js/WASM）把屏幕转成「文字 + 截图像素坐标」，默认不向云端上传图片，大幅降低截图 token。可选接本地或在线视觉模型描述游戏、图片、图表等 OCR 读不出的内容（按 本地>在线>Coopanion 模型商 自动路由）；可给核心打一个小钩子，把内置 cua 的截图回执就地换成 OCR 文本（图片不落库）。自带「模型 / 诊断 / 配置」三个可视化面板与一键补丁脚本。",
+  "description": "在本机把屏幕 OCR 成「文字 + 坐标」，默认不把截图发到云端，省掉每帧看屏的 token；可选接视觉模型，也可硬拦截内置截图。",
   "keywords": [
     "cortico-world"
   ],
@@ -11,25 +11,62 @@
   "engines": {
     "node": ">=22"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HY-pt/cortico-world-localvision.git"
+  },
+  "homepage": "https://github.com/HY-pt/cortico-world-localvision",
+  "bugs": {
+    "url": "https://github.com/HY-pt/cortico-world-localvision/issues"
+  },
+  "files": [
+    "src",
+    "dist",
+    "scripts",
+    "patches",
+    "docs",
+    "describe.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "os": [
+    "win32",
+    "darwin"
+  ],
   "cortico": {
     "kind": "world",
     "api": 6,
     "displayName": "本地视觉 LocalVision",
     "describe": "describe.json",
     "webUiClient": "dist/webui.js",
-    "webUiStyle": "dist/webui.css"
+    "webUiStyle": "dist/webui.css",
+    "tags": [
+      "local",
+      "experimental"
+    ],
+    "locales": {
+      "zh": {
+        "displayName": "本地视觉 LocalVision",
+        "description": "在本机把屏幕 OCR 成「文字 + 坐标」，默认不上传截图，省掉每帧看屏的 token；可选接视觉模型看图，也可硬拦截内置截图。"
+      },
+      "en": {
+        "displayName": "LocalVision",
+        "description": "Reads the screen locally with OCR and returns text with coordinates, keeping screenshots off the cloud by default. Optional vision model and built-in screenshot interception."
+      }
+    }
   },
   "devDependencies": {
     "cortico": "^0.2.4",
     "esbuild": "^0.25.12"
   },
   "scripts": {
+    "test": "node --experimental-transform-types scripts/describe-extension.ts && node --experimental-transform-types scripts/check-extension.ts",
     "smoke": "node scripts/smoke.mjs",
     "build:web": "node scripts/build-webui.mjs",
     "describe:extension": "node --experimental-transform-types scripts/describe-extension.ts",
     "check:extension": "node --experimental-transform-types scripts/check-extension.ts",
-    "patch:hook": "node scripts/apply-hook-patch.mjs",
-    "postinstall": "node scripts/apply-hook-patch.mjs --silent"
+    "patch:hook": "node scripts/apply-hook-patch.mjs"
   },
   "dependencies": {
     "tesseract.js": "^7.0.0"
