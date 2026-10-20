@@ -1,5 +1,9 @@
 # cortico-world-localvision（本地视觉 / LocalVision）
 
+<div align="center">
+  <img src="docs/cover.jpg" alt="本地视觉 LocalVision" width="320" />
+</div>
+
 Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再交给模型，默认不把截图发到云端，省掉每帧看屏的 token。点击、打字、按键等操作交给内置的「电脑操作」（`pet_cua_*`），本插件不重造引擎。
 
 需要看图片、图表、游戏画面时，可选接一个**视觉模型**（本地 > 在线 > Coopanion 模型商自动路由）；也可以打一个小补丁**硬拦截**内置截图，图片不落库、不上传。
