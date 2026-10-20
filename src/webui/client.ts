@@ -35,21 +35,19 @@ interface ProbeResult {
   online: { ok: boolean; ms: number; configured: boolean; detail: string };
 }
 
-// 所有设置都在同一个配置组（world:localvision）里——「模型」面板与「配置」页是同一份配置，
-// 面板是更顺手的编辑器，配置页是原始/高级入口。框架会静默丢弃未声明键，所以这里必须存到该组。
-const GROUP = 'world:localvision';
+// 模型设置经面板 invoke('save') → 后端 ctx.persist 直接深合并落盘，
+// 不走配置组 schema（模型键已不在配置页 schema 里，setConfig 会被框架静默丢弃）。
 const K = 'worlds.localvision';
 const PROVIDER_KEYS = [
   'custom', 'openai', 'anthropic', 'gemini', 'deepseek', 'qwen', 'openrouter', 'xai',
   'kimi', 'zhipu', 'minimax', 'doubao', 'qianfan', 'stepfun', 'ollama', 'lmstudio',
 ];
 
-/** 状态表：Coopanion 模型 / 本地模型 / 在线模型 三行，实测后填状态。 */
+/** 状态表：本地 / 在线 两行（Coopanion 模型商由下方灰字说明，不占行）。 */
 function statusTable(ui: import('cortico/web/shared/client-panel.ts').WebUi, t: (a: string, b: string) => string) {
   const table = ui.table({ head: [t('类型', 'Kind'), t('地址 / 模型商', 'Base URL'), t('模型', 'Model'), t('状态', 'Status')] });
   const cells: Record<string, { base: HTMLElement; model: HTMLElement; status: HTMLElement }> = {};
   const rows: Array<[keyof typeof cells, string]> = [
-    ['coop', t('Coopanion 模型', 'Coopanion model')],
     ['local', t('本地模型', 'Local')],
     ['online', t('在线模型', 'Online')],
   ];
@@ -76,10 +74,7 @@ const model: WebUiPanel = {
     // 卡 1：状态
     const statusCard = ui.sheet({
       title: t('状态', 'Status'),
-      desc: t(
-        '「Coopanion 模型商」本身支持视觉（对话模型直接看图），无需也不做连通测试；本地/在线 = 看图用的视觉模型端点（框架通道传不了图，需单独配）。点「实测端点」才发请求。',
-        'The Coopanion provider supports vision natively (your chat model sees images); no config or test. Local/online = the vision endpoint for image input. Click Test to probe.',
-      ),
+      desc: t('点「实测端点」检测下方视觉模型端点是否在线。', 'Click Test to check whether the vision endpoints below are online.'),
     });
     app.appendChild(statusCard.el);
     const { table, cells } = statusTable(ui, t);
@@ -87,29 +82,34 @@ const model: WebUiPanel = {
     const ping = ui.button(t('实测端点', 'Test endpoint'), { size: 'sm', variant: 'primary' });
     const msg = ui.msgline('');
     bar.append(ping, msg);
-    const coopNote = ui.msgline(t('Coopanion 模型商本身支持视觉模型（对话模型直接看图，无需配置、不做连通测试）。', 'The Coopanion provider supports vision natively (chat model sees images); no config or test needed.'));
+    const coopNote = ui.msgline(t('Coopanion 模型商本身支持视觉模型，无需配置，对话模型直接看图。', 'The Coopanion provider supports vision natively — no config, your chat model sees images directly.'));
     statusCard.body.append(bar, table.el, coopNote);
 
     // 卡 2：连接与调参（改动即保存）
     const connCard = ui.sheet({
       title: t('连接与调参', 'Connection'),
       en: 'conn',
-      desc: t('填好端点与模型名后改动即时保存；点「获取可用模型」可从端点自动拉取模型清单，免去手敲拼错。', 'Changes save instantly; "Fetch models" pulls the endpoint\'s model list so you don\'t type it by hand.'),
+      desc: t('改动即时保存；「获取可用模型」可自动拉取端点模型清单，不用手敲。', 'Changes save instantly; "Fetch models" pulls the model list so you don\'t type it by hand.'),
     });
     app.appendChild(connCard.el);
     const saveMsg = ui.msgline(t('改动即保存到 config.json。', 'Changes save to config.json.'));
     connCard.body.appendChild(saveMsg);
     const disabledHint = ui.msgline(
-      t('视觉模型未启用：下方配置会保留但不生效；优先选择的模型仍可修改（coop 不依赖端点）。', 'Vision model disabled: settings below are kept but inactive; the preferred model stays editable (coop needs no endpoint).'),
+      t('视觉模型未启用，下方配置保留但不生效。', 'Vision model is off; settings below are kept but inactive.'),
     );
     disabledHint.classList.add('lv-hint');
     disabledHint.style.display = 'none';
 
-    const save = async (patch: Record<string, unknown>, group = GROUP) => {
+    const save = async (patch: Record<string, unknown>) => {
       saveMsg.textContent = t('保存中…', 'Saving…');
       saveMsg.classList.remove('bad');
       try {
-        await ctx.setConfig(group, patch);
+        // persist 的 patch 是 worlds.localvision 段内的扁平键，去掉前缀。
+        const flat: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(patch)) {
+          flat[k.startsWith(`${K}.`) ? k.slice(K.length + 1) : k] = v;
+        }
+        await ctx.invoke('save', [flat]);
         saveMsg.textContent = t('已保存 ✓', 'Saved ✓');
         await refresh();
       } catch (e) {
@@ -147,10 +147,10 @@ const model: WebUiPanel = {
     });
     const priority = ui.select({
       options: [
-        { value: 'auto', label: 'auto（本地 > 在线 > Coopanion 兜底）' },
-        { value: 'local', label: 'local（只用本地端点）' },
-        { value: 'online', label: 'online（只用在线端点）' },
-        { value: 'coop', label: 'coop（用 Coopanion 模型商）' },
+        { value: 'auto', label: '自动（本地 > 在线 > Coopanion）' },
+        { value: 'local', label: '本地' },
+        { value: 'online', label: '在线' },
+        { value: 'coop', label: 'Coopanion' },
       ],
       onChange: (v) => void save({ [`${K}.localModelPriority`]: v }),
     });
@@ -160,7 +160,7 @@ const model: WebUiPanel = {
     const fetchModelsBtn = ui.button(t('获取可用模型', 'Fetch models'), { size: 'sm' });
     const modelSelect = ui.select({ options: [] });
     modelSelect.style.display = 'none';
-    const modelSelectField = ui.field(t('已部署模型（点「获取可用模型」后出现，选一个即填入模型名）', 'Deployed models (pick to fill)'), modelSelect);
+    const modelSelectField = ui.field(t('已部署模型', 'Deployed models'), modelSelect);
     modelSelectField.style.display = 'none';
     modelSelect.addEventListener('change', () => {
       const v = modelSelect.value;
@@ -199,7 +199,14 @@ const model: WebUiPanel = {
     const modelFetchBar = ui.rowbar();
     modelFetchBar.append(fetchModelsBtn, modelMsg);
 
-    // 分区：端点与模型（展开）/ 高级调参（折叠）—— 用折叠卡降低视觉密度。
+    // 顶层：启用开关 → 优先选择的模型（关掉后仍可改，coop 不依赖端点）→ 折叠区。
+    connCard.body.append(
+      enabled.el,
+      ui.field(t('优先选择的模型（看图）', 'Preferred model'), priority),
+      disabledHint,
+    );
+
+    // 分区：端点与模型（勾选时展开）/ 高级调参（折叠）——未勾选时整体灰掉并收起。
     const secBase = ui.foldSheet('lv-conn-base', {
       title: t('端点与模型', 'Endpoint & model'),
       desc: t('选择本地或在线端点，填好地址与模型名。', 'Pick a local or online endpoint, fill the URL and model name.'),
@@ -207,10 +214,10 @@ const model: WebUiPanel = {
     });
     connCard.body.appendChild(secBase.el);
     secBase.body.append(
-      ui.field(t('厂商预设（custom 选这里后自己填地址）', 'Provider (custom = fill your own)'), provider),
+      ui.field(t('厂商预设', 'Provider'), provider),
       ui.field(t('协议', 'Protocol'), protocol),
-      ui.field(t('地址（custom 就填这里）', 'Base URL'), baseUrl),
-      ui.field(t('API Key（密钥，如 sk-…；本地服务留空）', 'API key (sk-…; empty for local)'), apiKey),
+      ui.field(t('地址', 'Base URL'), baseUrl),
+      ui.field(t('API Key', 'API key'), apiKey),
       ui.field(t('模型名', 'Model name'), modelName),
       modelFetchBar,
       modelSelectField,
@@ -223,19 +230,12 @@ const model: WebUiPanel = {
     });
     connCard.body.appendChild(secAdv.el);
     secAdv.body.append(
-      ui.field(t('自定义路径（协议选 custom 填这里）', 'Custom path'), customPath),
+      ui.field(t('自定义路径', 'Custom path'), customPath),
       ui.field(t('maxTokens', 'maxTokens'), maxTokens),
       ui.field(t('temperature', 'temperature'), temperature),
       ui.field(t('超时（ms）', 'Timeout (ms)'), timeout),
       ui.field(t('附加指令', 'Extra prompt'), prompt),
       ui.field(t('图片精度', 'Image detail'), detail),
-    );
-
-    // 顶层：启用开关 + 优先选择的模型（关掉后仍可改优先级，coop 不依赖端点）。
-    connCard.body.append(
-      enabled.el,
-      ui.field(t('优先选择的模型（看图）', 'Preferred model'), priority),
-      disabledHint,
     );
 
     /** 关掉视觉模型：端点/调参折叠收起并灰掉（配置保留，只是不生效）；优先级保持可改。 */
@@ -255,11 +255,6 @@ const model: WebUiPanel = {
 
     /** 用 state 刷新状态表与输入框；正在编辑的输入框不覆盖。 */
     const applyState = (s: ModelState) => {
-      // Coopanion 模型商：本身支持视觉（对话模型直接看图），无需也不做连通测试，状态固定显示。
-      cells.coop.base.textContent = t('（Coopanion 模型商）', '(Coopanion provider)');
-      cells.coop.model.textContent = s.coopModel || t('（在 Coopanion 中配置）', '(configured in Coopanion)');
-      cells.coop.status.textContent = t('本身支持视觉', 'Vision-ready');
-      cells.coop.status.className = 'pill on';
       const local = s.kind === 'local';
       cells.local.base.textContent = local ? s.resolvedBase || '—' : '—';
       cells.local.model.textContent = local ? s.model || '—' : '—';
@@ -334,7 +329,10 @@ const model: WebUiPanel = {
   },
 };
 
-/** 「诊断」面板：懒加载——点「运行诊断」才采集并显示。 */
+/** 上次诊断报告：存 localStorage，跨页签/刷新保留，直到下次检测覆盖。 */
+const REPORT_KEY = 'localvision:lastReport';
+
+/** 「诊断」面板：懒加载——点「运行诊断」才采集；上次结果保留到下次检测覆盖。 */
 const diagnostics: WebUiPanel = {
   mount(ctx) {
     const { ui, root } = ctx;
@@ -346,7 +344,7 @@ const diagnostics: WebUiPanel = {
 
     const card = ui.sheet({
       title: t('诊断', 'Diagnostics'),
-      desc: t('屏幕/DPI、OCR、硬拦截。懒加载：点按钮才检测。', 'Screen/DPI, OCR, hook. Lazy: click to run.'),
+      desc: t('点「运行诊断」检测屏幕、OCR 与硬拦截，结果保留到下次检测。', 'Click Run to check screen, OCR and interception; results stay until the next run.'),
     });
     app.appendChild(card.el);
     const bar = ui.rowbar();
@@ -355,7 +353,6 @@ const diagnostics: WebUiPanel = {
     const msg = ui.msgline(t('尚未检测。', 'Not run yet.'));
     bar.append(run, copy, msg);
     const body = ui.h('div', 'lv-body');
-    body.appendChild(ui.placeholder(t('点击「运行诊断」开始检测。', 'Click Run to start.')));
     card.body.append(bar, body);
 
     let lastText = '';
@@ -366,6 +363,35 @@ const diagnostics: WebUiPanel = {
         parent.appendChild(line);
       }
     };
+    const renderReport = (r: Report) => {
+      body.textContent = '';
+      for (const section of r.sections ?? []) {
+        body.appendChild(ui.section(section.title));
+        rowsInto(body, section.rows);
+      }
+      for (const tip of r.tips ?? []) body.appendChild(ui.h('div', 'lv-tip', `建议：${tip}`));
+      const det = ui.h('details', 'lv-raw');
+      const pre = ui.h('pre', 'lv-doctor');
+      pre.textContent = r.text ?? '';
+      det.append(ui.h('summary', null, t('原始报告', 'Raw report')), pre);
+      body.appendChild(det);
+    };
+
+    // 恢复上次检测结果（有记录就不显示占位）。
+    try {
+      const saved = localStorage.getItem(REPORT_KEY);
+      if (saved) {
+        const r = JSON.parse(saved) as Report;
+        lastText = r.text ?? '';
+        renderReport(r);
+        msg.textContent = t('显示上次检测结果。', 'Showing the last run.');
+      }
+    } catch {
+      /* 记录损坏则忽略 */
+    }
+    if (!body.childNodes.length) {
+      body.appendChild(ui.placeholder(t('点击「运行诊断」开始检测。', 'Click Run to start.')));
+    }
 
     run.addEventListener('click', () => {
       run.disabled = true;
@@ -374,18 +400,13 @@ const diagnostics: WebUiPanel = {
       void (async () => {
         const r = await ctx.invoke<Report>('report', [false]);
         lastText = r.text ?? '';
-        body.textContent = '';
-        for (const section of r.sections ?? []) {
-          body.appendChild(ui.section(section.title));
-          rowsInto(body, section.rows);
+        renderReport(r);
+        try {
+          localStorage.setItem(REPORT_KEY, JSON.stringify(r));
+        } catch {
+          /* 存不下也不影响本次显示 */
         }
-        for (const tip of r.tips ?? []) body.appendChild(ui.h('div', 'lv-tip', `建议：${tip}`));
-        const det = ui.h('details', 'lv-raw');
-        const pre = ui.h('pre', 'lv-doctor');
-        pre.textContent = r.text ?? '';
-        det.append(ui.h('summary', null, t('原始报告', 'Raw report')), pre);
-        body.appendChild(det);
-        msg.textContent = '';
+        msg.textContent = t('检测完成。', 'Done.');
       })()
         .catch((e) => {
           msg.textContent = e instanceof Error ? e.message : String(e);

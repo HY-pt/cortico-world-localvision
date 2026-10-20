@@ -3,7 +3,7 @@
   "version": "0.3.0",
   "type": "module",
   "main": "./src/index.ts",
-  "description": "本地视觉 World：本机 OCR（tesseract.js/WASM）把屏幕转成文字+坐标，操作交给 Coopanion 内置电脑操作（pet_cua_*），大幅降低截图 token。",
+  "description": "本地视觉 World：在本机截屏后用本机 OCR（tesseract.js/WASM）把屏幕转成「文字 + 截图像素坐标」，默认不向云端上传图片，大幅降低截图 token。可选接本地或在线视觉模型描述游戏、图片、图表等 OCR 读不出的内容（按 本地>在线>Coopanion 模型商 自动路由）；可给核心打一个小钩子，把内置 cua 的截图回执就地换成 OCR 文本（图片不落库）。自带「模型 / 诊断 / 配置」三个可视化面板与一键补丁脚本。",
   "keywords": [
     "cortico-world"
   ],
@@ -27,7 +27,8 @@
     "smoke": "node scripts/smoke.mjs",
     "build:web": "node scripts/build-webui.mjs",
     "describe:extension": "node --experimental-transform-types scripts/describe-extension.ts",
-    "check:extension": "node --experimental-transform-types scripts/check-extension.ts"
+    "check:extension": "node --experimental-transform-types scripts/check-extension.ts",
+    "patch:hook": "node scripts/apply-hook-patch.mjs"
   },
   "dependencies": {
     "tesseract.js": "^7.0.0"

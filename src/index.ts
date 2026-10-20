@@ -186,9 +186,9 @@ const TOOL_DECLS = [
   {
     name: 'localvision_see',
     description:
-      '看屏幕：在本机截屏后用系统 OCR 把可见文字转成「文字 + 截图像素坐标」返回，默认不向云端上传图片（省 token）。' +
+      '看屏幕：在本机截屏后用本机 OCR 把可见文字转成「文字 + 截图像素坐标」返回，默认不向云端上传图片（省 token）。' +
       '小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别。' +
-      '只有当屏幕上一行文字都没有、OCR 彻底失败时，才把截图作为图片回退。' +
+      '屏幕上一行文字都没有时，按配置处理：默认只回文字提示（最省 token）；也可交给视觉模型（本地端点 / 在线端点 / Coopanion 模型商）或直接上传图片（费 token）。' +
       '返回的坐标可直接传给内置的 pet_cua_click（同一显示器、默认 1280×800 缩放）。',
     parameters: {
       type: 'object',
@@ -229,7 +229,7 @@ const TOOL_DECLS = [
   {
     name: 'localvision_describe',
     description:
-      '用视觉模型描述画面（游戏、图片、图表、视频帧等 OCR 读不出来的内容）。需要先在配置里启用视觉模型；图片发到配置的端点（本地或线上）。',
+      '用视觉模型描述画面（游戏、图片、图表、视频帧等 OCR 读不出来的内容）。需在「模型」页启用视觉模型，按「优先选择的模型」路由：自动=本地>在线>Coopanion 模型商，也可锁定本地端点、在线端点或直接用 Coopanion 模型商（截图交给对话模型看）。',
     parameters: {
       type: 'object',
       properties: {
@@ -244,7 +244,7 @@ const TOOL_DECLS = [
   {
     name: 'localvision_doctor',
     description:
-      '诊断本地视觉：报告屏幕/DPI、OCR 语言与已缓存语言包、硬拦截是否生效、视觉模型端点配置；checkModel=true 时还会实际请求一次端点。排查“识别不准/模型不工作”时先跑它。',
+      '诊断本地视觉：报告屏幕/DPI、OCR 语言与已缓存语言包、硬拦截是否生效、当前视觉模型配置；checkModel=true 时还会实际请求一次端点。排查“识别不准/模型不工作”时先跑它（也可在「诊断」面板点按钮查看）。',
     parameters: {
       type: 'object',
       properties: {
@@ -257,8 +257,9 @@ const TOOL_DECLS = [
 ];
 
 /**
- * 配置拆两组：截图/OCR 一张卡、视觉模型一张卡。
- * 19 项堆一张卡太挤，模型那组里的「地址/路径」也是 custom 真正要填的空位。
+ * 配置页分组：只保留截图/OCR 这层（视觉模型的启用、端点、模型名等 12 项不再重复出现，
+ * 「模型」面板是唯一编辑入口，经 ctx.persist 直接落盘；本组 description 会被
+ * syncConfigSummary() 动态改写成当前视觉模型的只读摘要，配置页每次加载都取最新值）。
  */
 function ocrConfigGroup(lang: string): ConfigGroup {
   const zh = lang !== 'en';
@@ -269,27 +270,18 @@ function ocrConfigGroup(lang: string): ConfigGroup {
     schema: {
       type: 'object',
       title: zh ? '本地视觉 · 配置' : 'Local vision · settings',
-      description: zh
-        ? '看屏与视觉模型的所有配置（与「模型」面板是同一份；面板是更顺手的编辑器，这里作为原始/高级入口）。改了即时生效，不用重启。'
-        : 'All capture and vision-model settings (same source as the Model panel, which is the friendlier editor; this is the raw/advanced entry). Changes apply immediately.',
+      description: zh ? '视觉模型配置摘要（动态）。' : 'Vision model summary (dynamic).',
       properties: {
         [`${K}.visionStrategy`]: {
           type: 'string',
           title: zh ? '感知优先级' : 'Perception order',
+          // enum 保留全部旧值（兼容已存的配置），下拉只显示 configOptions 给的 3 项。
           enum: ['auto', 'ocr-only', 'model-first', 'model-only', 'image-only'],
+          'x-options': 'localvision.visionStrategy',
           'x-hot': true,
           description: zh
-            ? 'auto=OCR→视觉模型→图片（默认，OCR 优先，最省 token）；ocr-only 只 OCR；model-first 先模型再 OCR；model-only 只模型；image-only 直接回退图片（游戏/视频）。'
-            : 'auto=OCR→model→image (default, OCR first); ocr-only; model-first; model-only; image-only.',
-        },
-        [`${K}.localModelPriority`]: {
-          type: 'string',
-          title: zh ? '优先选择的模型' : 'Preferred model',
-          enum: ['auto', 'local', 'online', 'coop'],
-          'x-hot': true,
-          description: zh
-            ? '看图用哪个模型：auto=按 本地>在线>Coopanion 模型商 自动路由（端点按地址自动判本地/在线，最后兜底把截图交给 Coopanion 对话模型）；local=只用本地端点；online=只用在线端点；coop=直接用 Coopanion 模型商。'
-            : 'Which model describes images: auto routes local>online>Coopanion; local/online pin one; coop uses the Coopanion chat model.',
+            ? '自动模式：OCR>视觉模型>图片上传（默认OCR优先，最省token）。'
+            : 'Auto: OCR > vision model > image upload (OCR first, cheapest).',
         },
         [`${K}.ocrLang`]: {
           type: 'string',
@@ -303,104 +295,20 @@ function ocrConfigGroup(lang: string): ConfigGroup {
           type: 'string',
           title: zh ? 'OCR 无文字时' : 'When OCR finds nothing',
           enum: ['image', 'text'],
+          'x-options': 'localvision.onOcrEmpty',
           description: zh
-            ? 'OCR 没认出文字时怎么办（硬拦截截图与「看一眼」工具共用这一开关）：image=把截图作为图片发给 Coopanion 已配的模型（费 token）；text=丢弃图片只回文字（默认，最省 token）。'
-            : 'When OCR finds no text (shared by intercepted screenshots and the see tool): image sends the screenshot to the Coopanion model (costs tokens); text drops it (default).',
+            ? '图片：截图将从 Coopanion 模型走（会正常消耗 token）。\n仅限文字：只能识别文字，无法打游戏、看视频（默认 OCR 优先，大幅度降低 token 开销）。'
+            : 'Image: the screenshot goes to the Coopanion model (costs tokens).\nText only: text recognition only — no games or video (default, OCR first, far fewer tokens).',
           'x-hot': true,
         },
         [`${K}.hookIntercept`]: {
           type: 'boolean',
           title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
           description: zh
-            ? '注册核心变换，把内置 cua 的截图换成 OCR 文字；框架没打 hook 时自动降级。'
-            : 'Replace screenshot tool results with OCR text; degrades when the framework has no hook.',
-          'x-hot': true,
-        },
-        // ↓ 视觉模型全部配置（与「模型」面板是同一份，面板是更顺手的编辑器）。
-        [`${K}.localModelEnabled`]: {
-          type: 'boolean',
-          title: zh ? '启用视觉模型（本地/线上）' : 'Vision model (local/online)',
-          description: zh
-            ? 'OCR 读不出内容时（游戏/图片/图表），用 OpenAI 兼容或 Anthropic 端点描述画面；本地端点图片不离开本机，线上端点按厂商隐私政策。'
-            : 'Describe non-text content (games/images/charts) with an OpenAI-compatible or Anthropic endpoint; local endpoints keep the image on this machine, online ones follow the vendor policy.',
-          'x-hot': true,
-        },
-        [`${K}.localModelProvider`]: {
-          type: 'string',
-          title: zh ? '厂商预设' : 'Provider preset',
-          enum: ['custom', 'openai', 'anthropic', 'gemini', 'deepseek', 'qwen', 'openrouter', 'xai', 'kimi', 'zhipu', 'minimax', 'doubao', 'qianfan', 'stepfun', 'ollama', 'lmstudio'],
-          'x-hot': true,
-          description: zh
-            ? '选厂商后，地址留空就用它的默认地址、协议选 auto 就用它的默认协议；选 custom 时必须自己填下面的「视觉模型地址」。'
-            : 'Pick a vendor: leave the base URL empty for its default and protocol auto for its default. Choosing custom requires the base URL below.',
-        },
-        [`${K}.localModelBaseUrl`]: {
-          type: 'string',
-          title: zh ? '视觉模型地址（custom 就填这里）' : 'Vision model base URL (fill this for custom)',
-          description: zh
-            ? '选了厂商预设可以留空（用它的默认地址）；选 custom 必须自己填。如 https://api.openai.com/v1、https://api.deepseek.com/v1、https://dashscope.aliyuncs.com/compatible-mode/v1、https://openrouter.ai/api/v1、http://127.0.0.1:11434/v1'
-            : 'Leave empty to use the vendor preset default; required when the preset is custom. e.g. https://api.openai.com/v1, https://openrouter.ai/api/v1, http://127.0.0.1:11434/v1',
-          'x-hot': true,
-        },
-        [`${K}.localModelProtocol`]: {
-          type: 'string',
-          title: zh ? '协议' : 'Protocol',
-          enum: ['auto', 'openai-chat', 'anthropic-messages', 'openai-responses', 'custom'],
-          'x-hot': true,
-          description: zh
-            ? 'auto=跟随厂商预设；openai-chat（OpenAI/DeepSeek/Qwen/OpenRouter/Gemini 兼容…）；anthropic-messages；openai-responses；custom=自定义路径（仍是 OpenAI Chat 请求体）。'
-            : 'auto follows the provider preset; openai-chat; anthropic-messages; openai-responses; custom uses the custom path with an OpenAI Chat body.',
-        },
-        [`${K}.localModelPath`]: {
-          type: 'string',
-          title: zh ? '自定义路径（选 custom 协议填这里）' : 'Custom path (fill this for the custom protocol)',
-          description: zh ? '仅 custom 协议用，会拼在地址后面；默认 /chat/completions。' : 'Only for the custom protocol; appended to the base URL. Defaults to /chat/completions.',
-          'x-hot': true,
-        },
-        [`${K}.localModelApiKey`]: {
-          type: 'string',
-          title: zh ? '视觉模型 Key' : 'Vision model key',
-          description: zh ? '厂商的 API 密钥（如 DeepSeek / OpenAI 的 sk-…），不是接口地址；本地 Ollama / LM Studio 留空。' : 'The vendor API key (sk-…), not the endpoint URL; leave empty for Ollama / LM Studio.',
-          'x-hot': true,
-        },
-        [`${K}.localModelName`]: {
-          type: 'string',
-          title: zh ? '视觉模型名' : 'Vision model name',
-          description: zh ? '如 qwen-vl-max、gpt-5、claude-haiku-5-5、gemini-3.5-flash-lite、qwen2.5vl:7b' : 'e.g. qwen-vl-max, gpt-5, claude-haiku-5-5, gemini-3.5-flash-lite, qwen2.5vl:7b',
-          'x-hot': true,
-        },
-        [`${K}.localModelTimeoutMs`]: {
-          type: 'integer',
-          title: zh ? '视觉模型超时' : 'Vision model timeout',
-          minimum: 1000,
-          maximum: 120000,
-          'x-suffix': 'ms',
-          'x-hot': true,
-        },
-        [`${K}.localModelMaxTokens`]: {
-          type: 'integer',
-          title: zh ? '最大输出 token' : 'Max output tokens',
-          minimum: 1,
-          maximum: 8192,
-          'x-hot': true,
-        },
-        [`${K}.localModelTemperature`]: {
-          type: 'number',
-          title: zh ? '温度' : 'Temperature',
-          minimum: 0,
-          maximum: 2,
-          'x-hot': true,
-        },
-        [`${K}.localModelPrompt`]: {
-          type: 'string',
-          title: zh ? '附加指令' : 'Extra prompt',
-          description: zh ? '追加给视觉模型的指令；留空用内置提示。' : 'Extra instruction for the vision model; empty uses the built-in prompt.',
-        },
-        [`${K}.localModelDetail`]: {
-          type: 'string',
-          title: zh ? '图片细节' : 'Image detail',
-          enum: ['auto', 'low', 'high'],
-          'x-hot': true,
+            ? '注册核心变换，把内置 cua 的截图换成 OCR 文字；框架没打 hook 时自动降级。关闭即时生效，重新开启需重启 World。'
+            : 'Replace screenshot tool results with OCR text; degrades when the framework has no hook. Turning off applies at once; turning back on needs a World restart.',
+          // hook 在 World 启动时注册（start），没有配置监听：开启需重启 World，所以不是热配置。
+          'x-hot': false,
         },
       },
     },
@@ -438,6 +346,27 @@ export default {
     tools: TOOL_DECLS,
     events: [],
   },
+  /**
+   * 配置页下拉的显示名（x-options）：存储值仍是英文，界面显示中文。
+   * 感知优先级只暴露 自动 / 模型 / OCR-only 三项；OCR 无文字时显示 图片 / 文本。
+   */
+  configOptions: (kind: string, lang: string) => {
+    const zh = lang !== 'en';
+    if (kind === 'localvision.visionStrategy') {
+      return [
+        { value: 'auto', label: zh ? '自动' : 'Auto' },
+        { value: 'model-first', label: zh ? '模型' : 'Model' },
+        { value: 'ocr-only', label: 'OCR-only' },
+      ];
+    }
+    if (kind === 'localvision.onOcrEmpty') {
+      return [
+        { value: 'image', label: zh ? '图片' : 'Image' },
+        { value: 'text', label: zh ? '文本' : 'Text' },
+      ];
+    }
+    return [];
+  },
   create: (ctx: any) => new LocalVisionWorld(ctx),
 } satisfies WorldDefinition<LocalVisionSection>;
 
@@ -445,6 +374,9 @@ class LocalVisionWorld {
   readonly id = 'localvision';
   private host: WorldHost | null = null;
   private unregisterHook: (() => void) | null = null;
+  /** 配置页分组的活引用：syncConfigSummary() 改它的 description，配置页每次加载取最新。 */
+  private uiGroup: ConfigGroup | null = null;
+  private uiLang = 'zh';
   /** 同一张截图重复出现时（历史重放、动作后截图）不重复 OCR。 */
   private readonly ocrCache = new Map<string, OcrWord[]>();
   /** 上一次截图的基准，供局部裁剪把「截图坐标」换算成原生像素。 */
@@ -1065,6 +997,7 @@ class LocalVisionWorld {
   /** 模型面板状态：只读本地配置并解析端点，不联网。 */
   private modelState() {
     const cfg = this.cfg;
+    this.syncConfigSummary();
     const endpoint = resolveEndpoint(cfg);
     const kind: 'local' | 'online' = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(endpoint.base) ? 'local' : 'online';
     return {
@@ -1146,9 +1079,19 @@ class LocalVisionWorld {
   private async modelList(): Promise<{ ok: boolean; models: string[]; detail: string }> {
     const cfg = this.cfg;
     const endpoint = resolveEndpoint(cfg);
-    const base = endpoint.base;
-    if (!cfg.localModelEnabled || !base) {
-      return { ok: false, models: [], detail: '未配置（缺启用或地址）' };
+    let base = endpoint.base;
+    if (!cfg.localModelEnabled) {
+      return { ok: false, models: [], detail: '未启用视觉模型，请先在上方勾选' };
+    }
+    // 在线模型严格要求地址 + 密钥，缺了就直接提示，不发请求（避免莫名的 fetch failed）。
+    if (base && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(base) && !cfg.localModelApiKey.trim()) {
+      return { ok: false, models: [], detail: '缺少必要数据：在线模型需要先填 API Key（本地模型可留空）' };
+    }
+    // 本地放宽：密钥可空；地址没填时按厂商猜默认端口。
+    if (!base) {
+      if (cfg.localModelProvider === 'ollama') base = 'http://127.0.0.1:11434';
+      else if (cfg.localModelProvider === 'lmstudio') base = 'http://127.0.0.1:1234/v1';
+      else return { ok: false, models: [], detail: '缺少必要数据：请先填地址' };
     }
     const isOllama = cfg.localModelProvider === 'ollama' || /ollama|11434/i.test(base);
     const headers: Record<string, string> = {};
@@ -1189,26 +1132,32 @@ class LocalVisionWorld {
 
   webUi(lang: string) {
     const zh = lang !== 'en';
+    this.uiLang = lang;
+    // 组对象是活引用：服务端每次请求都从这里重新序列化（bot.ts allConfigGroups），
+    // 所以 syncConfigSummary() 运行时改 schema.description，配置页就能显示当前值。
+    const group = ocrConfigGroup(lang);
+    this.uiGroup = group;
+    this.syncConfigSummary();
     return {
       label: '本地视觉 LocalVision',
-      // 所有配置收进唯一一组（world:localvision）；视觉模型设置与「模型」面板是同一份，
-      // 面板是更顺手的编辑器，这里作为原始/高级入口，不再单独开一个重复的「视觉模型」分组。
-      config: [ocrConfigGroup(lang)],
+      // 配置页只保留截图/OCR 层；视觉模型在「模型」面板编辑（经 ctx.persist 落盘），
+      // 本组描述是面板写入的只读摘要，用户不用翻页也能看到当前配置。
+      config: [group],
       panels: [
         {
           id: 'model',
           title: zh ? '模型' : 'Model',
           description: zh
-            ? '视觉模型配置与在线状态：本地/在线表格、连接参数编辑、实测端点。'
-            : 'Vision model settings and status: local/online table, connection, endpoint test.',
-          getMethods: ['state', 'probe', 'models'],
+            ? '配置视觉模型并检测端点是否在线。'
+            : 'Configure the vision model and test its endpoints.',
+          getMethods: ['state', 'probe', 'models', 'save'],
         },
         {
           id: 'diagnostics',
           title: zh ? '诊断' : 'Diagnostics',
           description: zh
-            ? '运行一次诊断：屏幕/DPI、OCR 语言与缓存、硬拦截。懒加载：点「运行诊断」才检测。'
-            : 'Run diagnostics: screen/DPI, OCR, hook. Lazy: click to run.',
+            ? '检测屏幕、OCR 与硬拦截，结果保留到下次检测。'
+            : 'Check screen, OCR and interception; results stay until the next run.',
           getMethods: ['report'],
         },
       ],
@@ -1231,10 +1180,37 @@ class LocalVisionWorld {
           if (method === 'state') return this.modelState();
           if (method === 'probe') return this.modelProbe();
           if (method === 'models') return this.modelList();
+          if (method === 'save') {
+            // 面板保存走 ctx.persist（深合并进 worlds.localvision 并同步 config.json），
+            // 绕过配置组 schema 校验——模型键已不在配置页 schema 里，避免被静默丢弃。
+            const patch = (args?.[0] ?? {}) as Record<string, unknown>;
+            this.ctx.persist(patch as never);
+            this.syncConfigSummary();
+            return { ok: true };
+          }
         }
         if (panel === 'diagnostics' && method === 'report') return this.doctorData(args?.[0] === true);
         throw new Error(`unknown panel/method: ${panel}/${method}`);
       },
     };
+  }
+
+  /** 配置页分组描述 = 当前视觉模型的只读摘要（未启用时提示去「模型」页开启）。 */
+  private syncConfigSummary(): void {
+    const g = this.uiGroup;
+    if (!g) return;
+    const zh = this.uiLang !== 'en';
+    const cfg = this.cfg;
+    if (!cfg.localModelEnabled) {
+      g.schema.description = zh
+        ? '视觉模型未启用。此页只读展示当前配置；启用、端点与模型名请在「模型」页修改。'
+        : 'Vision model disabled. This page is a read-only summary; enable it on the Model panel.';
+      return;
+    }
+    const base = resolveEndpoint(cfg).base || '（厂商默认地址）';
+    const prio: Record<string, string> = { auto: '自动', local: '本地', online: '在线', coop: 'Coopanion' };
+    g.schema.description = zh
+      ? `当前视觉模型：${cfg.localModelProvider} / ${cfg.localModelName || '未填模型名'} @ ${base}（优先级 ${prio[cfg.localModelPriority] ?? cfg.localModelPriority}）。此页只读展示，修改请到「模型」页。`
+      : `Current vision model: ${cfg.localModelProvider} / ${cfg.localModelName || 'no model set'} @ ${base} (priority ${cfg.localModelPriority}). Read-only here; edit on the Model panel.`;
   }
 }

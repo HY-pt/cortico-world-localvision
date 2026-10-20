@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "localvision_see",
-      "description": "看屏幕：在本机截屏后用系统 OCR 把可见文字转成「文字 + 截图像素坐标」返回，默认不向云端上传图片（省 token）。小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别。只有当屏幕上一行文字都没有、OCR 彻底失败时，才把截图作为图片回退。返回的坐标可直接传给内置的 pet_cua_click（同一显示器、默认 1280×800 缩放）。",
+      "description": "看屏幕：在本机截屏后用本机 OCR 把可见文字转成「文字 + 截图像素坐标」返回，默认不向云端上传图片（省 token）。小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别。屏幕上一行文字都没有时，按配置处理：默认只回文字提示（最省 token）；也可交给视觉模型（本地端点 / 在线端点 / Coopanion 模型商）或直接上传图片（费 token）。返回的坐标可直接传给内置的 pet_cua_click（同一显示器、默认 1280×800 缩放）。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -99,7 +99,7 @@
     },
     {
       "name": "localvision_describe",
-      "description": "用视觉模型描述画面（游戏、图片、图表、视频帧等 OCR 读不出来的内容）。需要先在配置里启用视觉模型；图片发到配置的端点（本地或线上）。",
+      "description": "用视觉模型描述画面（游戏、图片、图表、视频帧等 OCR 读不出来的内容）。需在「模型」页启用视觉模型，按「优先选择的模型」路由：自动=本地>在线>Coopanion 模型商，也可锁定本地端点、在线端点或直接用 Coopanion 模型商（截图交给对话模型看）。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -150,7 +150,7 @@
     },
     {
       "name": "localvision_doctor",
-      "description": "诊断本地视觉：报告屏幕/DPI、OCR 语言与已缓存语言包、硬拦截是否生效、视觉模型端点配置；checkModel=true 时还会实际请求一次端点。排查“识别不准/模型不工作”时先跑它。",
+      "description": "诊断本地视觉：报告屏幕/DPI、OCR 语言与已缓存语言包、硬拦截是否生效、当前视觉模型配置；checkModel=true 时还会实际请求一次端点。排查“识别不准/模型不工作”时先跑它（也可在「诊断」面板点按钮查看）。",
       "parameters": {
         "type": "object",
         "properties": {

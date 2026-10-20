@@ -2,6 +2,8 @@
 
 Coopanion / Cortico 的 World 扩展：**只负责「看屏幕」**——在本机把截图 OCR 成文字 + 坐标，默认不把图片发到云端，省掉每帧截图的 token。**点击、打字、按键等操作交给 Coopanion 内置的「电脑操作」**（`pet_cua_*` 工具），本插件不重造引擎。
 
+需要看图片、图表、游戏画面时，可选接一个**本地或在线视觉模型**（本地 > 在线 > Coopanion 模型商 自动路由）；也可以给核心打一个小钩子，**硬拦截**内置 cua 的截图回执、就地换成 OCR 文本（图片不落库、不上传）。自带「模型 / 诊断 / 配置」三个可视化面板与一键补丁脚本。
+
 > 插件名：local vision（本地视觉）｜包名：`cortico-world-localvision`｜契约：`api: 6`
 
 ---
@@ -12,7 +14,8 @@ Coopanion / Cortico 的 World 扩展：**只负责「看屏幕」**——在本�
 |---|---|
 | **看屏** `localvision_see` | 本机截屏 → tesseract.js（WASM）OCR → 返回「文字 + 截图像素坐标」，默认**不上传图片** |
 | **提字** `localvision_ocr` | 同上，只返回纯文本、不含坐标 |
-| **兜底** | 屏幕上没有任何文字（纯图表/图片/视频）时，才把截图作为图片回退给 Coopanion 已配的模型 |
+| **看画面** `localvision_describe` | OCR 读不出的内容（游戏/图片/图表/视频帧）交给视觉模型：本地端点 → 在线端点 → Coopanion 模型商，按「优先选择的模型」路由 |
+| **兜底** | 屏幕上没有任何文字时按配置处理：**默认只回文字提示**（最省 token）；也可选择交给视觉模型，或把截图上传给 Coopanion 已配的模型（费 token） |
 
 | 不做（用内置 `pet_cua_*`） | 工具 |
 |---|---|
@@ -37,11 +40,12 @@ Coopanion / Cortico 的 World 扩展：**只负责「看屏幕」**——在本�
 
 视觉任务的处理：
 
-- 关掉硬拦截（`hookIntercept: false`），截图照常发给模型；
-- 或保留拦截，把 `onOcrEmpty` 设为 `"image"`，OCR 没文字时回退图片（费 token）；
-- 小字用 `region` 局部重看；纯看图用 `localvision_describe`（本地/线上视觉模型）或内置的 `pet_cua_zoom`。
+- 在「模型」页启用视觉模型，把优先级设为 `自动`：OCR 读不出字时自动交给本地或在线视觉模型；
+- 或把优先级设为 `Coopanion`，截图直接交给当前对话模型看（官方默认模型都能读图，费 token）；
+- 或在「配置」页把「OCR 无文字时」设为 `图片`，仅在这种情况下回退图片（默认 `文本`，不发图）；
+- 小字用 `region` 局部重看；纯看图用 `localvision_describe` 或内置的 `pet_cua_zoom`。
 
-> 一句话：省 token 的代价就是「模型看不到像素，只看到 OCR 读出来的字」。玩游戏这类场景请直接关掉 OCR 拦截。
+> 一句话：省 token 的代价就是「模型看不到像素，只看到 OCR 读出来的字」。玩游戏这类场景请启用视觉模型，或关掉 OCR 拦截让截图照常发上去。
 
 ---
 
@@ -83,15 +87,20 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
 软约束（envPrompt + `afterAction=false`）挡不住模型直接调 `pet_cua_screenshot`。要**硬拦截**，给 Cortico 打一个很小的补丁：在工具回执落库前加一个变换钩子。
 
 - 补丁：`patches/core-tool-outcome-hook.patch`（约 120 行，只改 `core/types.ts`、`core/loop.ts`、`core/core.ts`）
-- 应用（Coopanion 0.2.5）：
+- **推荐：一键应用脚本**（幂等、自动备份、不依赖 `patch` 命令，Windows 直接跑）：
+
+  ```bash
+  npm run patch:hook                                    # 自动探测 Coopanion 安装目录
+  npm run patch:hook -- <cortico-src 目录>               # 或手动指定
+  ```
+
+  已打过会自动跳过；首次修改前写 `core/*.ts.bak-hookpatch` 备份；撤销=把备份改回原文件名，或升级/重装 Coopanion。
+- 也可以手动应用（需要 `patch` 命令）：
 
   ```bash
   cd "C:/Users/synf/AppData/Local/Programs/Coopanion/resources/app/build/cortico/src"
   patch -p0 < <本仓库>/patches/core-tool-outcome-hook.patch
   ```
-
-  先备份这三个文件；Coopanion 升级后补丁会被覆盖，重新打一次即可。
-  撤销：把同目录下的 `core/*.ts.bak-lv-hook-*` 覆盖回原文件，或直接升级/重装 Coopanion。
 - 然后**重启 Coopanion**。本插件启动时会检测 `registerToolOutcomeTransform` 并注册：
   - `pet_cua_screenshot` / `pet_cua_zoom` 的图片 → 本机 OCR 文字 + 坐标，图片不落库、不上传；
   - 动作后自动附的截图（`pet_cua_click` 等）也会被按 `screen/zoom/截图` 特征识别并替换；
@@ -110,10 +119,10 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
 | `ocrLang` | `"auto"` | `auto` 跟随系统语言；也可填 `chi_sim` / `eng` / `chi_sim+eng`，或 `zh-Hans` / `en-US` 自动映射 |
 | `screenshotMaxWidth` | `1280` | 截图缩放上限；**要和内置 cua 的 `screenshot.maxWidth` 一致**，坐标才能直接复用 |
 | `screenshotMaxHeight` | `800` | 同上 |
-| `hookIntercept` | `true` | **硬拦截**：注册核心 hook，把内置 cua 的截图回执换成 OCR 文本（框架没打 hook 时自动降级） |
+| `hookIntercept` | `true` | **硬拦截**：注册核心 hook，把内置 cua 的截图回执换成 OCR 文本（框架没打 hook 时自动降级）。关闭即时生效，**重新开启需重启 World** |
 | `hookTools` | `["pet_cua_screenshot","pet_cua_zoom","cua_screenshot","cua_zoom"]` | 额外强制拦截的工具名；带 `screen/zoom/截图` 特征的 blob 无论工具名都会被拦 |
-| `onOcrEmpty` | `"text"` | OCR 找不到文字时怎么办（硬拦截截图与 `localvision_see` 共用）：`image` 把截图发给 Coopanion 已配的模型（**费 token**），`text` 丢弃图片只留提示（默认，最省 token） |
-| `visionStrategy` | `"auto"` | 感知顺序：`auto`（OCR→模型→图片）/ `ocr-only` / `model-first` / `model-only` / `image-only` |
+| `onOcrEmpty` | `"text"` | OCR 找不到文字时怎么办（硬拦截截图与 `localvision_see` 共用）：`image` 把截图发给 Coopanion 已配的模型（**费 token**），`text` 丢弃图片只留提示（默认，OCR 优先，大幅度降低 token 开销） |
+| `visionStrategy` | `"auto"` | 感知顺序，界面只给三项：`auto` 自动（OCR>视觉模型>图片上传）/ `model-first` 模型（先视觉模型，OCR 兜底）/ `ocr-only` 只 OCR。旧值 `model-only`、`image-only` 代码仍支持 |
 | `localModelPriority` | `"auto"` | 优先选择的模型（看图）：`auto` 按本地>在线>Coopanion 兜底自动路由（端点按地址自动判本地/在线）；`local` / `online` 只用对应端点；`coop` 直接把截图交给 Coopanion 对话模型 |
 | `localModelEnabled` | `false` | 启用视觉模型（本地或线上；游戏/图片/图表等 OCR 读不出的内容） |
 | `localModelProvider` | `"custom"` | 厂商预设：`openai` / `deepseek` / `qwen` / `openrouter` / `gemini` / `anthropic` / `xai` / `kimi` / `zhipu` / `minimax` / `doubao` / `qianfan` / `stepfun` / `ollama` / `lmstudio` / `custom` |
@@ -176,29 +185,29 @@ Coopanion 已支持 OpenAI、Anthropic、Gemini、xAI、OpenRouter、DeepSeek、
 
 - `localModelEnabled=true`，填 `localModelBaseUrl` / `localModelApiKey` / `localModelName`。
 - 调参：`localModelMaxTokens`、`localModelTemperature`、`localModelPrompt`（追加指令）、`localModelDetail`（`auto/low/high`）。
-- 用法：模型问「画面里有什么」时用 `localvision_describe`；`localvision_see` 在 OCR 无文字时也会先问它，再回退图片。
+- 用法：模型问「画面里有什么」时用 `localvision_describe`；`localvision_see` 在 OCR 无文字时也会按优先级交给视觉模型（默认不回退图片）。
 
 ### 感知优先级
 
-`visionStrategy` 决定 `localvision_see` 的顺序：
+`visionStrategy` 决定 `localvision_see` 的顺序：**界面只给三项**（自动 / 模型 / OCR-only）：
 
-| 值 | 顺序 |
-|---|---|
-| `auto`（默认） | OCR → 视觉模型 → 图片；OCR 有字就不调模型 |
-| `ocr-only` | 只 OCR，不调模型、不回退图片 |
-| `model-first` | 视觉模型 → OCR → 图片 |
-| `model-only` | 只视觉模型 |
-| `image-only` | 直接回退图片（游戏/视频） |
+| 值 | 界面 | 顺序 |
+|---|---|---|
+| `auto`（默认） | 自动 | OCR → 视觉模型 → 图片；OCR 有字就不调模型 |
+| `model-first` | 模型 | 视觉模型 → OCR → 图片 |
+| `ocr-only` | OCR-only | 只 OCR，不调模型、不回退图片 |
 
-> 默认 `auto` 即「OCR 优先」，只有 OCR 读不出字才调用视觉模型。
+旧值 `model-only`、`image-only` 代码仍支持（不在下拉里）。
+
+> 默认 `auto` 即「OCR 优先」，只有 OCR 读不出字才调用视觉模型，最省 token。
 
 ### World 页页签与诊断
 
 World 页共四个页签：**模型 → 诊断 → 配置 → 本地视觉·环境提示词**（顺序由框架固定：自定义面板 → 配置 → 提示词，跨类型不能重排）。
 
-- **模型** —— 视觉模型全部配置：**Coopanion 模型 / 本地 / 在线** 三行状态表（类型 / 地址 / 模型 / 状态）+ 连接与调参（启用、厂商预设、协议、地址、API Key（密钥 sk-…，本地服务留空）、模型名、自定义路径、maxTokens、temperature、精度、**优先选择的模型**），改动即保存。**取消勾选「启用视觉模型」后**，「端点与模型」「高级调参」两个折叠区自动收起并灰掉——已填的配置保留不清空，只是不生效；「优先选择的模型」保持在顶层可改（`coop` 不依赖端点）。「Coopanion 模型商」行**不做连通测试**，直接显示「本身支持视觉」（对话模型天然能看图）；下面「实测端点」只测你配的视觉模型端点（本地/在线，按地址自动判定，真发一次带图请求）。模型名一行下方有「**获取可用模型**」按钮：填好地址与密钥后点它，会从端点拉取已部署模型清单并生成下拉，选一个即自动填入模型名，不用手敲（Ollama 走 `/api/tags`，OpenAI 兼容走 `/models`，自带密钥时带 `Bearer`）。注意：框架的 cognition 通道传不了图片，所以**看图仍需在下面配一个支持图片输入的端点**，或者把「优先选择的模型」设为 `coop`（截图交给对话模型看）。
-- **诊断** —— **懒加载**：打开页面不自动检测，点「运行诊断」才采集（屏幕/DPI、系统语言、硬拦截、OCR 语言与缓存、统计），附可复制的原始报告。
-- **配置** —— 一张「本地视觉 · 配置」卡，**所有配置都在这里**（截图/OCR + 视觉模型），和「模型」面板是同一份数据；面板是更顺手的编辑器，这里作为原始/高级入口。
+- **模型** —— 视觉模型全部配置：**本地 / 在线** 两行状态表（实测后填状态；Coopanion 模型商由表下灰字一句话说明，不占行）+ 连接与调参，改动即保存。**「启用视觉模型」勾选框在卡片最上方**：勾选时「端点与模型」折叠区自动展开，取消勾选时两个折叠区收起并灰掉——已填的配置保留不清空，只是不生效；「优先选择的模型」紧跟勾选框、始终可改，下拉选项为 自动 / 本地 / 在线 / Coopanion。「实测端点」只测你配的视觉模型端点（本地/在线，按地址自动判定，真发一次带图请求）。模型名下方有「**获取可用模型**」按钮：填好地址与密钥后点它，从端点拉取已部署模型清单生成下拉，选一个即填入模型名。注意：**看图仍需配一个支持图片输入的端点**，或者把优先级设为 `Coopanion`（截图交给对话模型看）。
+- **诊断** —— **懒加载**：点「运行诊断」才采集（屏幕/DPI、系统语言、硬拦截、OCR 语言与缓存、统计），附可复制的原始报告；**上次结果保留显示，直到下次检测覆盖**（存浏览器本地，刷新页面也不丢）。
+- **配置** —— 一张「本地视觉 · 配置」卡，只有**截图/OCR 这层**的设置（感知优先级、OCR 语言、截图尺寸、OCR 无文字时、硬拦截）。视觉模型不在这里重复出现：组描述是一行**动态只读摘要**（当前厂商/模型/地址/优先级，改动后自动更新），编辑入口在「模型」页，不用翻页对照。
 - **本地视觉·环境提示词** —— 框架原生提示词模板页。
 
 工具 `localvision_doctor` 仍然可用，`checkModel: true` 会实测端点。
@@ -249,7 +258,7 @@ Windows 截屏脚本会先声明 DPI 感知（`SetProcessDPIAware`）再读屏�
 |---|---|---|
 | `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
 | `localvision_ocr` | `display?`、`region?` | 纯文本（不含坐标、不回退图片） |
-| `localvision_describe` | `prompt?`、`display?`、`region?` | 用视觉模型描述画面（本地/线上）；需配置视觉模型 |
+| `localvision_describe` | `prompt?`、`display?`、`region?` | 用视觉模型描述画面；按「优先选择的模型」路由到本地端点 / 在线端点 / Coopanion 模型商 |
 | `localvision_doctor` | `checkModel?` | 诊断报告：屏幕/DPI、OCR 语言与缓存、硬拦截、视觉模型端点；`checkModel:true` 会实测端点 |
 
 > **小字看不清？** 先用 `localvision_see` 拿坐标，再把那一块用 `region` 重看一次：`region` 与返回坐标同一空间，裁剪图按原始分辨率 OCR（不缩放），小字清楚很多。
@@ -278,7 +287,7 @@ A：先**重启进程**；扩展页显示「待重启」就是还没载入。重
 A：首次使用需要下载语言数据，确认网络可用、`localvision-tessdata/` 可写；中文界面把 `ocrLang` 设为 `chi_sim`。
 
 **Q：模型还是调了 `pet_cua_screenshot` 传图？**
-A：本插件不能强制拦截别的 World 的工具（Cortico 没有 tool-result hook）。靠两层约束：① 本插件的环境提示词明确要求「看屏只用 localvision_see，操作传 `screenshot:false`」；② 把内置 cua 的 `screenshot.afterAction` 关掉。
+A：默认只靠两层软约束：① 本插件的环境提示词明确要求「看屏只用 localvision_see，操作传 `screenshot:false`」；② 把内置 cua 的 `screenshot.afterAction` 关掉。要真正硬拦截，用 `npm run patch:hook` 给核心打上工具回执 hook（见「硬拦截」一节），之后无论模型调什么，截图回执都会被就地换成 OCR 文本。
 
 **Q：坐标点偏了？**
 A：确认 `screenshotMaxWidth/Height` 与内置 cua 一致，并且 `localvision_see` 和 `pet_cua_*` 看的是同一个 `display`。
