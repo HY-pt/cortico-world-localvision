@@ -43,7 +43,8 @@
     "webUiStyle": "dist/webui.css",
     "tags": [
       "local",
-      "experimental"
+      "experimental",
+      "sensitive-data"
     ],
     "locales": {
       "zh": {

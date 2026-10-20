@@ -1,3 +1,11 @@
 node_modules/
 *.log
 .DS_Store
+# 开发/本机残留：不影响发布包（package.json 的 files 白名单已把它挡在外面）
+*.tgz
+*.tsbuildinfo
+data/
+localvision-tessdata/
+.workbuddy/
+.env
+.env.local
