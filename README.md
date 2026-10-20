@@ -36,9 +36,11 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 仅靠提示词 + 关 afterAction 是软约束，模型仍可能直接调 `pet_cua_screenshot` 传图。给核心打一个小钩子即可硬拦截：内置 cua 的截图回执在落库前就地换成 OCR 文本（生成图、用户上传图不受影响）。
 
-```bash
-npm run patch:hook     # 在插件目录运行：幂等、自动备份、不依赖 patch 命令
-```
+三种打法，任选其一：
+
+1. **「诊断」面板一键打**（最省事）：World 页 → 诊断 → 「打核心补丁」按钮。幂等、自动备份，打完**重启 Coopanion** 生效。
+2. **命令行**：插件目录跑 `npm run patch:hook`。
+3. **跟随扩展安装自动打**：安装时 pnpm 会列出 `cortico-world-localvision` 的「待批准构建脚本」（就是打补丁这一步），在扩展页批准后自动执行——手动安装和 npm  registry 安装都走这套。
 
 打完后重启 Coopanion，配置页的「硬拦截截图」开启即生效（**重新开启需重启 World**）。没打补丁时自动降级为软约束，不会报错。
 

@@ -28,7 +28,8 @@
     "build:web": "node scripts/build-webui.mjs",
     "describe:extension": "node --experimental-transform-types scripts/describe-extension.ts",
     "check:extension": "node --experimental-transform-types scripts/check-extension.ts",
-    "patch:hook": "node scripts/apply-hook-patch.mjs"
+    "patch:hook": "node scripts/apply-hook-patch.mjs",
+    "postinstall": "node scripts/apply-hook-patch.mjs --silent"
   },
   "dependencies": {
     "tesseract.js": "^7.0.0"

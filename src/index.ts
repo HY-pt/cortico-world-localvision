@@ -17,6 +17,7 @@
  * 发布校验：pnpm describe:extension / pnpm check:extension
  */
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -1158,7 +1159,7 @@ class LocalVisionWorld {
           description: zh
             ? '检测屏幕、OCR 与硬拦截，结果保留到下次检测。'
             : 'Check screen, OCR and interception; results stay until the next run.',
-          getMethods: ['report'],
+          getMethods: ['report', 'patch'],
         },
       ],
       promptDocs: [
@@ -1190,9 +1191,37 @@ class LocalVisionWorld {
           }
         }
         if (panel === 'diagnostics' && method === 'report') return this.doctorData(args?.[0] === true);
+        if (panel === 'diagnostics' && method === 'patch') return this.applyCorePatch();
         throw new Error(`unknown panel/method: ${panel}/${method}`);
       },
     };
+  }
+
+  /**
+   * 诊断面板「打核心补丁」按钮：跑同一个幂等脚本（scripts/apply-hook-patch.mjs）。
+   * 脚本找不到宿主目录时也返回 ok=true（提示手动跑），不让面板报红。
+   */
+  private applyCorePatch(): { ok: boolean; patched: boolean; detail: string; output: string } {
+    const script = fileURLToPath(new URL('../scripts/apply-hook-patch.mjs', import.meta.url));
+    let output = '';
+    try {
+      const r = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 60000 });
+      output = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+      if (r.error) return { ok: false, patched: false, detail: `执行失败：${r.error.message}`, output };
+      const patched = /✓ 写入/.test(output);
+      const skipped = /已打过/.test(output) && !patched;
+      const notFound = /未找到/.test(output);
+      const detail = patched
+        ? '补丁已打好（改了 3 个核心文件，备份在旁）——重启 Coopanion 后生效。'
+        : skipped
+          ? '补丁已在位，无需重复打。'
+          : notFound
+            ? '没找到 Coopanion 安装目录；如在便携/自定义路径，请在插件目录手动跑 npm run patch:hook -- <cortico/src 路径>。'
+            : '补丁未生效（宿主版本可能不匹配）；可手动跑 npm run patch:hook 看详细输出。';
+      return { ok: true, patched, detail, output: output.slice(-800) };
+    } catch (e) {
+      return { ok: false, patched: false, detail: (e as Error).message, output: output.slice(-800) };
+    }
   }
 
   /** 配置页分组描述 = 当前视觉模型的只读摘要（未启用时提示去「模型」页开启）。 */

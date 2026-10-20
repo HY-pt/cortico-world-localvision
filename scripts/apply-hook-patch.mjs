@@ -8,24 +8,27 @@
  * 首次修改前写 <file>.bak-hookpatch 备份。
  *
  * 用法：
- *   node scripts/apply-hook-patch.mjs [cortico-src 目录]
+ *   node scripts/apply-hook-patch.mjs [cortico-src 目录] [--silent]
  * 缺省自动探测：%LOCALAPPDATA%/Programs/Coopanion/resources/app/build/cortico/src
+ * --silent：作为 postinstall 运行时压低输出；无论打没打、找没找到宿主，都以 0 退出（绝不阻断安装）。
  */
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
+const silent = args.includes('--silent');
+const quiet = (...a) => { if (!silent) console.log(...a); };
 const candidates = [
-  args[0],
+  args.find((a) => !a.startsWith('-')),
   join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Coopanion', 'resources', 'app', 'build', 'cortico', 'src'),
 ].filter(Boolean);
 const srcDir = candidates.find((p) => p && existsSync(join(p, 'core', 'loop.ts')));
 if (!srcDir) {
-  console.error('✗ 没找到 cortico src 目录。请传入路径：');
-  console.error('    node scripts/apply-hook-patch.mjs <.../Coopanion/resources/app/build/cortico/src>');
-  process.exit(1);
+  // 没装 Coopanion 的机器上（如纯开发 clone）静默跳过——不是错误。
+  quiet('未找到 Coopanion 的 cortico src 目录，跳过打补丁（可手动：npm run patch:hook -- <路径>）');
+  process.exit(0);
 }
-console.log(`目标：${srcDir}\n`);
+quiet(`目标：${srcDir}\n`);
 
 const files = ['core/types.ts', 'core/loop.ts', 'core/core.ts'];
 const originals = Object.fromEntries(files.map((f) => [f, readFileSync(join(srcDir, f), 'utf8')]));
@@ -40,7 +43,7 @@ let failed = false;
 function insertBefore(f, marker, anchor, insert) {
   let c = norm[f];
   if (c.includes(marker)) {
-    console.log(`  = ${f}：已打过，跳过`);
+    quiet(`  = ${f}：已打过，跳过`);
     return;
   }
   if (!c.includes(anchor)) {
@@ -49,14 +52,14 @@ function insertBefore(f, marker, anchor, insert) {
     return;
   }
   norm[f] = c.replace(anchor, insert + anchor);
-  console.log(`  + ${f}：已插入`);
+  quiet(`  + ${f}：已插入`);
 }
 
 /** 把 anchor 替换为 replacement；marker 出现即跳过。 */
 function replaceOnce(f, marker, anchor, replacement) {
   let c = norm[f];
   if (c.includes(marker)) {
-    console.log(`  = ${f}：已打过，跳过`);
+    quiet(`  = ${f}：已打过，跳过`);
     return;
   }
   if (!c.includes(anchor)) {
@@ -65,11 +68,11 @@ function replaceOnce(f, marker, anchor, replacement) {
     return;
   }
   norm[f] = c.replace(anchor, replacement);
-  console.log(`  + ${f}：已替换`);
+  quiet(`  + ${f}：已替换`);
 }
 
 // ── core/types.ts：类型 + WorldHost 可选方法 ─────────────────────────────
-console.log('core/types.ts');
+quiet('core/types.ts');
 insertBefore(
   'core/types.ts',
   'export type ToolOutcomeTransform',
@@ -100,7 +103,7 @@ insertBefore(
 );
 
 // ── core/loop.ts：import、变换集合、注册方法、toolResult 改造、两处调用点 ──
-console.log('core/loop.ts');
+quiet('core/loop.ts');
 replaceOnce(
   'core/loop.ts',
   '  ToolOutcome,\n  ToolOutcomeTransform,\n  ToolSchema,',
@@ -169,7 +172,7 @@ replaceOnce(
 );
 
 // ── core/core.ts：把注册方法挂进 World host ──────────────────────────────
-console.log('core/core.ts');
+quiet('core/core.ts');
 insertBefore(
   'core/core.ts',
   'registerToolOutcomeTransform: (fn)',
@@ -178,8 +181,10 @@ insertBefore(
 );
 
 if (failed) {
+  // postinstall 场景（--silent）也退出 0：补丁打不上不该阻断安装，插件会退化成软约束，
+  // 诊断面板/doctor 会明确报出「硬拦截未生效」。显式手动跑时不静音，让人看见错误。
   console.error('\n✗ 有锚点没匹配上，未写入任何文件。请确认宿主为 Coopanion 0.2.5（build/cortico/src）。');
-  process.exit(1);
+  process.exit(silent ? 0 : 1);
 }
 
 // ── 写回（先备份） ───────────────────────────────────────────────────────
@@ -188,6 +193,6 @@ for (const f of files) {
   const bak = join(srcDir, `${f}.bak-hookpatch`);
   if (!existsSync(bak)) copyFileSync(join(srcDir, f), bak);
   writeFileSync(join(srcDir, f), toEol(f, norm[f]));
-  console.log(`  ✓ 写入 ${f}（备份：${f}.bak-hookpatch）`);
+  quiet(`  ✓ 写入 ${f}（备份：${f}.bak-hookpatch）`);
 }
-console.log('\n完成。重启 Coopanion 生效；卸载补丁：把三个 .bak-hookpatch 改回原文件名即可。');
+quiet('\n完成。重启 Coopanion 生效；卸载补丁：把三个 .bak-hookpatch 改回原文件名即可。');

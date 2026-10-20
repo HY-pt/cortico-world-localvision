@@ -344,14 +344,15 @@ const diagnostics: WebUiPanel = {
 
     const card = ui.sheet({
       title: t('诊断', 'Diagnostics'),
-      desc: t('点「运行诊断」检测屏幕、OCR 与硬拦截，结果保留到下次检测。', 'Click Run to check screen, OCR and interception; results stay until the next run.'),
+      desc: t('点「运行诊断」检测屏幕、OCR 与硬拦截，结果保留到下次检测；「打核心补丁」给宿主打硬拦截钩子（幂等，打完重启生效）。', 'Click Run to check screen, OCR and interception; results stay until the next run. "Patch core" installs the interception hook (idempotent, needs a restart).'),
     });
     app.appendChild(card.el);
     const bar = ui.rowbar();
     const run = ui.button(t('运行诊断', 'Run'), { size: 'sm', variant: 'primary' });
+    const patch = ui.button(t('打核心补丁', 'Patch core'), { size: 'sm' });
     const copy = ui.copyButton(() => lastText);
     const msg = ui.msgline(t('尚未检测。', 'Not run yet.'));
-    bar.append(run, copy, msg);
+    bar.append(run, patch, copy, msg);
     const body = ui.h('div', 'lv-body');
     card.body.append(bar, body);
 
@@ -392,6 +393,25 @@ const diagnostics: WebUiPanel = {
     if (!body.childNodes.length) {
       body.appendChild(ui.placeholder(t('点击「运行诊断」开始检测。', 'Click Run to start.')));
     }
+
+    // 「打核心补丁」：给宿主打工具回执 hook（幂等、自动备份），打完需重启进程。
+    patch.addEventListener('click', () => {
+      patch.disabled = true;
+      msg.textContent = t('打补丁中…', 'Patching…');
+      msg.classList.remove('bad');
+      void (async () => {
+        const r = await ctx.invoke<{ ok: boolean; patched: boolean; detail: string; output: string }>('patch');
+        msg.textContent = r.detail;
+        msg.classList.toggle('bad', !r.ok);
+      })()
+        .catch((e) => {
+          msg.textContent = e instanceof Error ? e.message : String(e);
+          msg.classList.add('bad');
+        })
+        .finally(() => {
+          patch.disabled = false;
+        });
+    });
 
     run.addEventListener('click', () => {
       run.disabled = true;
