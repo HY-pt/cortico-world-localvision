@@ -52,3 +52,51 @@ export function describeOllama(
 export function ocrWithVlm(base64: string, baseUrl: string, model: string): Promise<string> {
   return chatWithImage(base64, baseUrl, model, OCR_PROMPT);
 }
+
+const ELEMENT_PROMPT =
+  '你是界面元素标注器。请列出图中所有可交互元素（按钮、链接、输入框、标签页、图标等），' +
+  '输出一个 JSON 数组，每个元素格式：' +
+  '{"id":<唯一整数>,"label":"<可见文字或用途>","type":"button|link|field|tab|icon|text",' +
+  '"x":<中心归一化x 0-1>,"y":<中心归一化y 0-1>,"w":<宽归一化0-1>,"h":<高归一化0-1>}。' +
+  '坐标必须归一化到整张图（0 到 1）。不要输出任何解释，只输出 JSON 数组本身。';
+
+const LOCATE_PROMPT =
+  '在图中找到文字 "{Q}" 所在的可点击区域，输出其归一化边界框 JSON：' +
+  '{"x":<中心x 0-1>,"y":<中心y 0-1>,"w":<宽0-1>,"h":<高0-1>}。只输出 JSON 本身，不要解释。';
+
+/** 结构化检测可见可交互元素（带归一化坐标），供云端用 id 点击。 */
+export async function detectElements(
+  base64: string,
+  baseUrl: string,
+  model: string
+): Promise<any[]> {
+  const raw = await chatWithImage(base64, baseUrl, model, ELEMENT_PROMPT);
+  const m = raw.match(/\[[\s\S]*\]/);
+  if (!m) return [];
+  try {
+    const arr = JSON.parse(m[0]);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 按文字在屏幕上定位其归一化边界框（OCR 锚定点击用）。 */
+export async function locateText(
+  base64: string,
+  baseUrl: string,
+  model: string,
+  query: string
+): Promise<{ x: number; y: number; w: number; h: number } | null> {
+  const prompt = LOCATE_PROMPT.replace('{Q}', query.replace(/[\\"]/g, ' '));
+  const raw = await chatWithImage(base64, baseUrl, model, prompt);
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[0]);
+    if (typeof o.x === 'number' && typeof o.y === 'number') return o;
+    return null;
+  } catch {
+    return null;
+  }
+}

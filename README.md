@@ -26,9 +26,9 @@ Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧�
 
 | 工具 | 作用 |
 |---|---|
-| `localvision_see` | 截主屏 → 本地 VLM → 稳定文字描述（窗口/文字/可点元素）。**感知主工具。** |
+| `localvision_see` | 截屏 → 本地 VLM → 稳定文字描述（窗口/文字/可点元素）。`structured=true` 时额外返回带 id 与归一化坐标的元素清单。**感知主工具。** |
 | `localvision_ocr` | 截屏 → 本地模型逐字提取文字。需要读具体文字时用。 |
-| `localvision_click` | **[接口占位]** 按 `elementId` / `text` / `x,y` 点击。尚未实现，见下。 |
+| `localvision_click` | 在屏幕上点击。坐标用归一化(0-1)，由本机乘回原生像素执行，**自适应任意分辨率/DPI/宽高比**。优先级：`elementId` > `text`（OCR 锚定） > `x,y`。 |
 
 ## 配置（`worlds.localvision`）
 
@@ -36,8 +36,8 @@ Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧�
 |---|---|---|
 | `vlmBaseUrl` | `http://127.0.0.1:11434/v1` | 本地 OpenAI 兼容视觉端点（Ollama / LM Studio / llama.cpp） |
 | `vlmModel` | `minicpm-v2.6` | 本地视觉模型；0.8B–4B 描述屏幕足够 |
-| `screenshotMaxWidth` | `1280` | 与 cua 对齐的缩放空间（感知阶段暂未强制缩放） |
-| `screenshotMaxHeight` | `800` | 同上 |
+| `screenshotMaxWidth` | `1280` | 发给 VLM 的图宽上限。截原生分辨率后**等比缩放**到此上限（只缩不放，不变形） |
+| `screenshotMaxHeight` | `800` | 发给 VLM 的图高上限 |
 | `ocrEnabled` | `true` | 是否开放 `localvision_ocr` |
 | `autoSeeOnStart` | `false` | 预留 |
 
@@ -53,19 +53,41 @@ Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧�
 - **方式 B（更彻底，待做）**：让 cua World 不再自己上传截图，改为消费 `localvision_see` 的文字。
   需要给 `cortico-world-cua` 打补丁或提供一个替代 World，配合下面的"点击设计"做确定性操作。
 
-## 点击设计（接口已留，方案待定——征询意见）
+## 点击设计（已实现：归一化坐标 + 元素引用，分辨率无关）
 
-`localvision_click` 目前只是占位。我的建议（**元素引用**，而非坐标猜测）：
+`localvision_click` 已不再是占位，核心思路是**把"屏幕分辨率"这件事完全挡在本机内部**：
 
-1. `localvision_see` 未来除了文字，还返回一份**带稳定 id 的元素清单 + 边界框**（坐标落在 cua 的
-   1280×800 空间）。
-2. 云端**只在元素空间做选择**（"点提交按钮"或选 `E3`），调用 `localvision_click({ elementId: 'E3' })`。
-3. **本机侧**把 id 解析为中心坐标并真正点击。坐标不上云、不靠云端猜像素。
-4. 文字密集型界面可用 `localvision_click({ text: '登录' })`：用 OCR 锚定最近文字再点。
+### 自适应截图与坐标变换
 
-这样云端 100% 是文字、点击确定性高、坐标永不离开本机。当前 `x,y` 仅作回退占位。
+- `localvision_see` / `localvision_ocr` 先用**原生物理分辨率**截屏（Windows 已设 `SetHighDpiMode(PerMonitorV2)`，绝不用逻辑像素），再**等比缩放**到
+  `screenshotMaxWidth × screenshotMaxHeight` 上限（只缩不放，保持宽高比**不变形**）。
+- 缩放图送给本地 VLM；VLM 给出的所有坐标都是**归一化(0-1)**，与分辨率、DPI、宽高比**完全无关**。
+- 本机保存最近一次截图的变换基准（`nativeWidth/Height`、`scaledWidth/Height`、`scale`、`monitor`）。
+  点击时执行 `原生像素 = 归一化坐标 × 原生尺寸`，因此无论你屏幕是 1920×1080、2K、4K 还是 3:2，
+  **点击都像素级命中**。
 
-> 也欢迎你拍板：是否要"本地 VLM 直接出坐标框"还是"VLM 出元素 + 独立定位器"，两者在精度与模型要求上不同。
+```
+截屏(原生, DPI感知) ──等比缩放──▶ 缩放图 ──▶ 本地VLM ──▶ 归一化坐标(0-1)
+                                                              │
+云端只见到归一化坐标 / 文字 ──────────────────────────────────┘
+点击时：原生像素 = 归一化 × 原生尺寸（本机执行，坐标永不离开本机）
+```
+
+### 三种点击路径（优先级从高到低）
+
+1. **`elementId`（最精确，推荐）**：`localvision_see({ structured: true })` 让本地 VLM 返回一份
+   带 `id` 与归一化边界框的元素清单；云端只选 id，调用 `localvision_click({ elementId: 3 })`，
+   本机解析为中心坐标并真实点击。**坐标不上云、不靠云端猜像素。**
+2. **`text`（OCR 锚定）**：`localvision_click({ text: '登录' })`，本机用 VLM 在屏幕上定位该文字的
+   边界框，点其区域中心。文字密集界面尤其好用。
+3. **`x, y`（归一化直接点击，回退）**：`localvision_click({ x: 0.5, y: 0.3 })` 直接给归一化坐标点击。
+
+> 多屏：截图默认主屏，可用 `localvision_see({ monitor: N })`（0-based）指定屏；点击沿用该基准。
+
+这样云端 100% 是文字、点击确定性高、坐标永不离开本机，且**不受任何分辨率/DPI 影响**。
+
+> 仍待你拍板的一点：VLM 出结构化元素框对模型有一定要求（0.8B–4B 的 MiniCPM-V/Qwen2-VL 基本可用，
+> 但极小的模型可能框不准）。若你更在意兼容最弱模型，可默认走 `text`/`x,y` 回退，把 `structured` 设为可选。
 
 ## 开发与安装
 
