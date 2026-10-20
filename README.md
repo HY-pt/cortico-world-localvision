@@ -4,6 +4,8 @@ Coopanion / Cortico 的 **World 扩展**，给桌宠提供「屏幕感知 + 点�
 
 > 插件名：local vision（本地视觉）｜包名：`cortico-world-localvision`｜契约：`api: 6`
 
+> **想直接装来用？** 推荐装已改造好的 [`HY-pt/cortico-world-cua`](https://github.com/HY-pt/cortico-world-cua)（方式 B，更彻底、且复用你 Coopanion 已填的 Key）。本仓库是这套思路的**独立设计原型 / PoC**。
+
 ---
 
 ## 产品定位：轻量优先，视觉兜底可选
@@ -119,12 +121,16 @@ click= localvision_click({ x: 0.5, y: 0.3 }) // Tier2 归一化坐标回退
 
 ---
 
-## 怎么真正省到钱（集成方式，待办）
+## 怎么真正省到钱（集成方式 · 已落地）
 
-本插件只负责"本地/可选感知 + 确定性点击"。要让云端**完全不收 cua 的截图**，配合以下任一种（尚未实现）：
+本仓库（`cortico-world-localvision`）是这套思路的**独立设计原型 / PoC**（一个 `api: 6` 的 World，自带 `localvision_see/ocr/click` 三件套，零模型依赖、通用视觉端点可选）。
 
-- **方式 A（推荐，现在就能用）**：把 Coopanion 的模型连接指向本地代理，在 API 边界把 cua 工具回执里的截图替换成本机 OCR/VLM 文字，云端彻底看不到图。
-- **方式 B（更彻底）**：让 cua World 不再自己上传截图，改为消费 `localvision_see` 的文字。需给 `cortico-world-cua` 打补丁或提供替代 World。
+要把"云端不收 cua 截图"真正落地到 Coopanion，**推荐直接装已改造好的 cua 分支**（更彻底、且复用你已填的 Key，无需第二遍配置）：
+
+- **✅ 方式 B（已落地，推荐）**：[`HY-pt/cortico-world-cua`](https://github.com/HY-pt/cortico-world-cua) —— Fork 原版 `cortico-world-cua`，在 `cua_screenshot` 链路里加了本机 OCR 拦截 + 两级截图 + 复用 Coopanion 已配视觉 API 的兜底。安装与配置见该仓库 README。
+- 方式 A（本地代理在 API 边界替换截图）：仍可作为不想改 cua 时的替代方案，但本仓库未内置，需自行搭建代理。
+
+> 结论：**以方式 B（cua 分支）为主**。本 `localvision` 仓库保留作为思路原型与独立 World（若你想要一套不依赖 cua 的 `localvision_*` 工具集可直接启用）。
 
 ---
 
