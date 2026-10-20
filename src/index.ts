@@ -140,7 +140,7 @@ export default {
   id: 'localvision',
   label: '本地视觉 LocalVision',
   defaults: (): LocalVisionSection => ({
-    enabled: true,
+    enabled: false,
     ocrLang: '',
     screenshotMaxWidth: 1280,
     screenshotMaxHeight: 800,
@@ -157,6 +157,7 @@ export default {
 } satisfies WorldDefinition<LocalVisionSection>;
 
 class LocalVisionWorld {
+  readonly id = 'localvision';
   private host: WorldHost | null = null;
   private unregisterHook: (() => void) | null = null;
   /** 同一张截图重复出现时（历史重放、动作后截图）不重复 OCR。 */
