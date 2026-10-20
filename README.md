@@ -1,117 +1,68 @@
 # cortico-world-localvision（本地视觉 / LocalVision）
 
-Coopanion / Cortico 的 World 扩展：**只负责「看屏幕」**——在本机把截图 OCR 成文字 + 坐标，默认不把图片发到云端，省掉每帧截图的 token。**点击、打字、按键等操作交给 Coopanion 内置的「电脑操作」**（`pet_cua_*` 工具），本插件不重造引擎。
+Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再交给模型，默认不把截图发到云端，省掉每帧看屏的 token。点击、打字、按键等操作交给内置的「电脑操作」（`pet_cua_*`），本插件不重造引擎。
 
-需要看图片、图表、游戏画面时，可选接一个**本地或在线视觉模型**（本地 > 在线 > Coopanion 模型商 自动路由）；也可以给核心打一个小钩子，**硬拦截**内置 cua 的截图回执、就地换成 OCR 文本（图片不落库、不上传）。自带「模型 / 诊断 / 配置」三个可视化面板与一键补丁脚本。
-
-> 插件名：local vision（本地视觉）｜包名：`cortico-world-localvision`｜契约：`api: 6`
-
----
-
-## 它做什么 / 不做什么
-
-| 做 | 怎么做 |
-|---|---|
-| **看屏** `localvision_see` | 本机截屏 → tesseract.js（WASM）OCR → 返回「文字 + 截图像素坐标」，默认**不上传图片** |
-| **提字** `localvision_ocr` | 同上，只返回纯文本、不含坐标 |
-| **看画面** `localvision_describe` | OCR 读不出的内容（游戏/图片/图表/视频帧）交给视觉模型：本地端点 → 在线端点 → Coopanion 模型商，按「优先选择的模型」路由 |
-| **兜底** | 屏幕上没有任何文字时按配置处理：**默认只回文字提示**（最省 token）；也可选择交给视觉模型，或把截图上传给 Coopanion 已配的模型（费 token） |
-
-| 不做（用内置 `pet_cua_*`） | 工具 |
-|---|---|
-| 点击 / 移动 / 拖拽 | `pet_cua_click` / `pet_cua_move` / `pet_cua_drag` |
-| 滚动 / 打字 / 按键 | `pet_cua_scroll` / `pet_cua_type` / `pet_cua_key` |
-| 窗口 / 等待 | `pet_cua_windows` / `pet_cua_focus` / `pet_cua_wait` |
-
-> 为什么不做操作：Coopanion 内置的电脑操作（`desktop-pet` 里的 `pet_cua_*`）已经完整可靠，再 fork 一套引擎就是重复造轮子。本插件只补「看屏不上图」这一层。
-
----
-
-## ⚠️ OCR 的边界（视觉损失）
-
-本插件把截图转成**文字**，它不是一个视觉模型。下面这些信息会丢失：
-
-- 布局与位置关系、图标、颜色、字体样式、控件状态（选中 / 禁用 / 悬停）；
-- 图片、图表、视频、游戏画面、地图、CAD / 设计稿的具体内容；
-- 手写、艺术字、极小字号、低对比度、被遮挡的文字。
-
-**不适合**：玩游戏、看视频、看图找茬、审设计稿、像素级还原 UI。
-**适合**：读文字、找按钮、填表单、点菜单、读报错、按标题切窗口。
-
-视觉任务的处理：
-
-- 在「模型」页启用视觉模型，把优先级设为 `自动`：OCR 读不出字时自动交给本地或在线视觉模型；
-- 或把优先级设为 `Coopanion`，截图直接交给当前对话模型看（官方默认模型都能读图，费 token）；
-- 或在「配置」页把「OCR 无文字时」设为 `图片`，仅在这种情况下回退图片（默认 `文本`，不发图）；
-- 小字用 `region` 局部重看；纯看图用 `localvision_describe` 或内置的 `pet_cua_zoom`。
-
-> 一句话：省 token 的代价就是「模型看不到像素，只看到 OCR 读出来的字」。玩游戏这类场景请启用视觉模型，或关掉 OCR 拦截让截图照常发上去。
-
----
-
-## 为什么能省 token
-
-Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每帧都在变，导致提示词缓存被击穿（实测账单里 8% 的未命中输入占了约 73% 费用），图片 token 本身也贵。
-
-本插件把「看屏」换成：
-
-```
-截屏（本机） → tesseract.js OCR（本机） → 文字 + 坐标  →  模型只收文字
-```
-
-- 云端收不到原始截图 → 视觉 token ≈ 0；
-- 屏幕没变时文字几乎不变 → 缓存持续命中；
-- 文字比 1280×800 的 JPEG 小几个数量级。
-
-配合把内置 cua 的「操作后附截图」关掉（见下），动作型任务也能稳定省下来。
-
----
+需要看图片、图表、游戏画面时，可选接一个**视觉模型**（本地 > 在线 > Coopanion 模型商自动路由）；也可以打一个小补丁**硬拦截**内置截图，图片不落库、不上传。
 
 ## 安装
 
-> 前提：Coopanion / Cortico 已装好，并且你打算用内置的「电脑操作」。
+1. 拿到代码，记住**绝对路径**：`git clone https://github.com/HY-pt/cortico-world-localvision.git`
+2. 扩展页 → **手动安装** → 填这个绝对路径 → **重启 Coopanion**（显示「待重启」就是还没载入）。
+3. 打开 **World 总览**，启用「本地视觉 LocalVision」（新 World 默认待命）。
+4. **习惯 → 电脑操作**：确认「使用电脑」「允许操作鼠标和键盘」已打开（内置 cua 的开关）。
+5. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`。
 
-1. 拿到代码：`git clone https://github.com/HY-pt/cortico-world-localvision.git`，或下载 ZIP 解压，记住**绝对路径**。
-2. 扩展页 → **手动安装**，填这个绝对路径，确认。
-3. **重启 Coopanion 进程**（所有插件都要重启才载入；扩展页会显示「待重启」）。
-4. 打开 **World 总览**，启用「本地视觉 LocalVision」——新 World 默认是**待命/未激活**状态，需要在这里打开（或写进 bot 的 `declares`）。
-5. 打开 **习惯 → 电脑操作**，确认「使用电脑」「允许操作鼠标和键盘」已打开（这是内置 cua 的开关）。
-6. **强烈建议**：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图。在高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`（或在高级模式的「电脑操作」页关掉对应开关）。
+装好后，对话里说「看一眼屏幕」，模型应当返回文字 + 坐标，而不是 `pet_cua_screenshot` 传图。
 
-装好后，对话里说「看一眼屏幕」，模型应当走 `localvision_see` 返回文字 + 坐标，而不是 `pet_cua_screenshot` 传图。
+## 使用
 
----
+- **看屏**：模型自动走 `localvision_see`（文字 + 坐标，可直接传给 `pet_cua_click`）；`localvision_ocr` 只取纯文字；`localvision_doctor` 或「诊断」面板用于排错。
+- **小字**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。
+- **World 页面签**：「模型」配/测视觉模型，「诊断」跑检测（上次结果会保留到下次检测），「配置」改截图/OCR 设置，「本地视觉·环境提示词」是框架原生页。
+- **看画面**：在「模型」页启用视觉模型并填端点（可点「获取可用模型」拉模型清单）；之后 `localvision_describe` 或 OCR 无文字时会按「优先选择的模型」（自动 / 本地 / 在线 / Coopanion）路由。
 
-## 硬拦截（方案 1，推荐）
+## 大致原理
 
-软约束（envPrompt + `afterAction=false`）挡不住模型直接调 `pet_cua_screenshot`。要**硬拦截**，给 Cortico 打一个很小的补丁：在工具回执落库前加一个变换钩子。
+```
+截屏（本机） → tesseract.js OCR（本机） → 文字 + 坐标 → 模型只收文字
+```
 
-- 补丁：`patches/core-tool-outcome-hook.patch`（约 120 行，只改 `core/types.ts`、`core/loop.ts`、`core/core.ts`）
-- **推荐：一键应用脚本**（幂等、自动备份、不依赖 `patch` 命令，Windows 直接跑）：
+- 云端收不到原始截图，视觉 token ≈ 0；文字比 1280×800 的 JPEG 小几个数量级，提示词缓存也不被每帧变化的截图击穿。
+- 坐标与 `pet_cua_*` 同一套等比缩放（默认 1280×800 上限、只缩不放），Windows 按物理像素截屏（DPI 感知），拿到的坐标可直接点击。
+- OCR 只读文字：图标、颜色、布局、游戏画面读不出——这类需求走视觉模型（见上）。
 
-  ```bash
-  npm run patch:hook                                    # 自动探测 Coopanion 安装目录
-  npm run patch:hook -- <cortico-src 目录>               # 或手动指定
-  ```
+## 可选：硬拦截内置截图
 
-  已打过会自动跳过；首次修改前写 `core/*.ts.bak-hookpatch` 备份；撤销=把备份改回原文件名，或升级/重装 Coopanion。
-- 也可以手动应用（需要 `patch` 命令）：
+仅靠提示词 + 关 afterAction 是软约束，模型仍可能直接调 `pet_cua_screenshot` 传图。给核心打一个小钩子即可硬拦截：内置 cua 的截图回执在落库前就地换成 OCR 文本（生成图、用户上传图不受影响）。
+
+```bash
+npm run patch:hook     # 在插件目录运行：幂等、自动备份、不依赖 patch 命令
+```
+
+打完后重启 Coopanion，配置页的「硬拦截截图」开启即生效（**重新开启需重启 World**）。没打补丁时自动降级为软约束，不会报错。
+
+<details>
+<summary>硬拦截细节（手动打补丁 / 撤销 / 维护）</summary>
+
+- 补丁约 120 行，只改 `core/types.ts`、`core/loop.ts`、`core/core.ts`，源码见 [`patches/core-tool-outcome-hook.patch`](patches/core-tool-outcome-hook.patch)。
+- 手动应用（需要 `patch` 命令）：
 
   ```bash
   cd "C:/Users/synf/AppData/Local/Programs/Coopanion/resources/app/build/cortico/src"
   patch -p0 < <本仓库>/patches/core-tool-outcome-hook.patch
   ```
-- 然后**重启 Coopanion**。本插件启动时会检测 `registerToolOutcomeTransform` 并注册：
-  - `pet_cua_screenshot` / `pet_cua_zoom` 的图片 → 本机 OCR 文字 + 坐标，图片不落库、不上传；
-  - 动作后自动附的截图（`pet_cua_click` 等）也会被按 `screen/zoom/截图` 特征识别并替换；
-  - 生成图、用户上传图不受影响（不是截图特征、也不在 `hookTools` 里）。
-- 没打补丁时自动降级为软约束，不会报错。
 
-> 维护成本：这是唯一需要跟 Coopanion 版本走的改动。升级后如果忘了打补丁，插件会退回软约束，不会坏。
+- 撤销：把 `core/*.ts.bak-hookpatch` 备份改回原文件名，或直接升级/重装 Coopanion。
+- 维护成本：这是唯一跟随 Coopanion 版本的改动，升级后忘了打补丁只会退回软约束，不会坏。
+- 不想打补丁、又想要硬保证的备选路线：`kind: provider` 包装器（默认不安装，设计与骨架见 [`docs/provider-wrapper.md`](docs/provider-wrapper.md)）。
+</details>
 
 ---
 
-## 配置（`worlds.localvision`）
+## 完整参数（`worlds.localvision`）
+
+<details>
+<summary>全部配置键与默认值</summary>
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -137,27 +88,11 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
 | `localModelPrompt` | `""` | 追加给视觉模型的指令；留空用内置提示 |
 | `localModelDetail` | `"auto"` | OpenAI 兼容的 `image_url.detail`：`auto` / `low` / `high` |
 
----
+感知优先级 `visionStrategy`：`auto`（默认）= OCR → 视觉模型 → 图片，OCR 有字就不调模型；`model-first` = 视觉模型 → OCR → 图片；`ocr-only` = 只 OCR。界面下拉为 自动 / 模型 / OCR-only。
+</details>
 
-## OCR 后端：tesseract.js（为什么不是系统 OCR）
-
-- 试过 Windows 自带的 WinRT OCR，但它要用 **PowerShell + .NET 反射** 调 WinRT，**卡巴斯基等杀软会直接拦掉**（本机实测）。
-- 现在用 **tesseract.js 7（纯 Node / WASM）**：不启外部进程、不加载反射、不落 exe，Windows / macOS / Linux 一致，杀软友好。
-- 语言数据首次使用时下载到部署数据目录的 `localvision-tessdata/`，之后复用：`chi_sim` 约 2.5 MB、`eng` 约 5 MB。
-- `ocrLang: auto`（默认）跟随系统语言：`zh-CN`→`chi_sim`、`zh-Hant`→`chi_tra`、`ja`→`jpn`、`ko`→`kor`、`ru/fr/de/es/pt/it`→对应语言，其余 `eng`；首次使用自动下载对应语言包。
-- 不需要安装 tesseract，也不需要任何视觉大模型。
-
----
-
-## 视觉模型（本地 / 线上，可选，默认关闭）
-
-OCR 读不出「画面内容」（游戏、图片、图表、视频帧）时，可以接一个视觉模型。**本地和线上都行**。
-
-### 线上（硬件不够跑本地模型时用这个）
-
-Coopanion 已支持 OpenAI、Anthropic、Gemini、xAI、OpenRouter、DeepSeek、Kimi、Qwen、MiniMax、智谱 GLM、豆包、百度千帆、StepFun（见 [Coopanion README](https://github.com/Pal-AI-Lab/Coopanion) 的 “Changing the model”）。配置页有「**厂商预设**」下拉：选 `openai` / `deepseek` / `qwen` / `openrouter` / `gemini` / `anthropic` / `xai` / `kimi` / `zhipu` / `minimax` / `doubao` / `qianfan` / `stepfun`，**地址留空就用它的默认地址，协议选 `auto` 就用它的默认协议**；不在列表里的选 `custom` 自己填。
-
-> World 读不到 Coopanion 的 provider 注册表（框架没给 World 这个 API），所以这里用「厂商预设 + 你自己的 Key」来切换，而不是直接复用 Coopanion 里已配的 provider 条目。你只有一个模型商也不影响，预设列表是独立的。
+<details>
+<summary>视觉模型：厂商预设与端点速查</summary>
 
 | 厂商 | 协议 | Base URL | 模型示例 |
 |---|---|---|---|
@@ -173,86 +108,14 @@ Coopanion 已支持 OpenAI、Anthropic、Gemini、xAI、OpenRouter、DeepSeek、
 | 其他 Responses 兼容 | `openai-responses` | 服务商的 `/responses` 地址 | 支持 Responses 的视觉模型 |
 | 其他 OpenAI Chat 兼容 | `custom` | 自己填地址 + `localModelPath` | 任意视觉模型 |
 
-> 模型必须支持图片输入；文本模型会在 `localvision_describe` 里报错。
-> **不想填端点、直接用 Coopanion 已配的模型看图**：在「配置」页把「OCR 无文字时」设为 `image`——OCR 没文字时会把截图交给当前对话模型（官方默认模型都能读图）。注意这会消耗 token，默认 `text`（不发图）。也可以把「优先选择的模型」设为 `coop`，所有截图都直接交给对话模型看。
+- 选厂商预设后地址可留空（用默认地址）、协议选 `auto`（用默认协议）；模型必须支持图片输入，文本模型会在 `localvision_describe` 报错。
+- 本地：Ollama `ollama pull qwen2.5vl:7b`；LM Studio 加载视觉模型后照界面填端点与模型名。
+- 不想填端点、直接用 Coopanion 已配的模型看图：「优先选择的模型」设 `Coopanion`（截图交给对话模型，费 token），或「OCR 无文字时」设 `图片`（仅无文字时回退，默认 `文本` 不发图）。
+- 默认关闭：不配端点就不会发起任何本地或网络请求。面板改动即时保存，改完 `src/webui/` 需重新 `npm run build:web` 并重启进程。
+</details>
 
-### 本地（能跑动再用）
-
-- Ollama：`ollama pull qwen2.5vl:7b`，端点 `http://127.0.0.1:11434/v1`，模型名 `qwen2.5vl:7b`
-- LM Studio：加载视觉模型，端点 `http://127.0.0.1:1234/v1`，模型名照界面填
-
-### 配置与调参
-
-- `localModelEnabled=true`，填 `localModelBaseUrl` / `localModelApiKey` / `localModelName`。
-- 调参：`localModelMaxTokens`、`localModelTemperature`、`localModelPrompt`（追加指令）、`localModelDetail`（`auto/low/high`）。
-- 用法：模型问「画面里有什么」时用 `localvision_describe`；`localvision_see` 在 OCR 无文字时也会按优先级交给视觉模型（默认不回退图片）。
-
-### 感知优先级
-
-`visionStrategy` 决定 `localvision_see` 的顺序：**界面只给三项**（自动 / 模型 / OCR-only）：
-
-| 值 | 界面 | 顺序 |
-|---|---|---|
-| `auto`（默认） | 自动 | OCR → 视觉模型 → 图片；OCR 有字就不调模型 |
-| `model-first` | 模型 | 视觉模型 → OCR → 图片 |
-| `ocr-only` | OCR-only | 只 OCR，不调模型、不回退图片 |
-
-旧值 `model-only`、`image-only` 代码仍支持（不在下拉里）。
-
-> 默认 `auto` 即「OCR 优先」，只有 OCR 读不出字才调用视觉模型，最省 token。
-
-### World 页页签与诊断
-
-World 页共四个页签：**模型 → 诊断 → 配置 → 本地视觉·环境提示词**（顺序由框架固定：自定义面板 → 配置 → 提示词，跨类型不能重排）。
-
-- **模型** —— 视觉模型全部配置：**本地 / 在线** 两行状态表（实测后填状态；Coopanion 模型商由表下灰字一句话说明，不占行）+ 连接与调参，改动即保存。**「启用视觉模型」勾选框在卡片最上方**：勾选时「端点与模型」折叠区自动展开，取消勾选时两个折叠区收起并灰掉——已填的配置保留不清空，只是不生效；「优先选择的模型」紧跟勾选框、始终可改，下拉选项为 自动 / 本地 / 在线 / Coopanion。「实测端点」只测你配的视觉模型端点（本地/在线，按地址自动判定，真发一次带图请求）。模型名下方有「**获取可用模型**」按钮：填好地址与密钥后点它，从端点拉取已部署模型清单生成下拉，选一个即填入模型名。注意：**看图仍需配一个支持图片输入的端点**，或者把优先级设为 `Coopanion`（截图交给对话模型看）。
-- **诊断** —— **懒加载**：点「运行诊断」才采集（屏幕/DPI、系统语言、硬拦截、OCR 语言与缓存、统计），附可复制的原始报告；**上次结果保留显示，直到下次检测覆盖**（存浏览器本地，刷新页面也不丢）。
-- **配置** —— 一张「本地视觉 · 配置」卡，只有**截图/OCR 这层**的设置（感知优先级、OCR 语言、截图尺寸、OCR 无文字时、硬拦截）。视觉模型不在这里重复出现：组描述是一行**动态只读摘要**（当前厂商/模型/地址/优先级，改动后自动更新），编辑入口在「模型」页，不用翻页对照。
-- **本地视觉·环境提示词** —— 框架原生提示词模板页。
-
-工具 `localvision_doctor` 仍然可用，`checkModel: true` 会实测端点。
-
-> 面板改完要重新 `npm run build:web`（`src/webui/client.ts` → `dist/webui.js` / `dist/webui.css`），再重启进程。
-
-> 默认关闭：不配端点就不会发起任何本地或网络请求。
-
----
-
-## 坐标为什么能直接给 `pet_cua_*`
-
-两边都用同一套等比缩放：`min(maxW/w, maxH/h, 1)`，默认 `1280×800`，只缩不放。
-
-Windows 截屏脚本会先声明 DPI 感知（`SetProcessDPIAware`）再读屏幕尺寸，所以 125% 缩放下拿到的也是物理像素（1920×1080），不会读成 1536×864。
-
-- 同一显示器下，`localvision_see` 返回的截图像素 = `pet_cua_click` 要的截图像素；
-- 多屏时给 `localvision_see` 传 `display`（1 起，1 = 最左），与 `pet_cua_*` 用同一个编号；
-- 如果你改过任一边的 `maxWidth/maxHeight`，两边要改成一样。
-
----
-
-## 分辨率适配
-
-任意分辨率都能用：只缩不放、保持宽高比，缩到 `1280×800` 以内（与内置 cua 的默认上限一致）。
-
-| 屏幕 | 截图 | 说明 |
-|---|---|---|
-| 1920×1080 | 1280×720 | 标准 |
-| 2560×1440 | 1280×720 | 文字变小 |
-| 3840×2160（4K） | 1280×720 | 小字更小，建议 `region` |
-| 3440×1440（21:9） | 1280×536 | 同上 |
-| 5120×1440（32:9） | 1280×360 | 高度压缩明显 |
-| 1080×1920（竖屏） | 450×800 | 宽度压缩 |
-| 1280×1024（5:4） | 1000×800 | 等比适配 |
-| 1024×768 / 800×600 | 原尺寸 | 小于上限不放大 |
-
-- Windows 截屏先声明 DPI 感知，按**物理像素**截取（125% 缩放下也是 1920×1080）。
-- 多屏：`display` 从 1 起，与 `pet_cua_*` 用同一个编号。
-- macOS 走 `screencapture`；Retina 下的坐标对齐尚未实测，建议先用小区域验证。
-- 4K / 超宽 / 竖屏下小字会明显变小：先 `localvision_see` 拿坐标，再用 `region` 按原生分辨率重看。
-
----
-
-## 工具
+<details>
+<summary>工具参数表</summary>
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
@@ -260,56 +123,45 @@ Windows 截屏脚本会先声明 DPI 感知（`SetProcessDPIAware`）再读屏�
 | `localvision_ocr` | `display?`、`region?` | 纯文本（不含坐标、不回退图片） |
 | `localvision_describe` | `prompt?`、`display?`、`region?` | 用视觉模型描述画面；按「优先选择的模型」路由到本地端点 / 在线端点 / Coopanion 模型商 |
 | `localvision_doctor` | `checkModel?` | 诊断报告：屏幕/DPI、OCR 语言与缓存、硬拦截、视觉模型端点；`checkModel:true` 会实测端点 |
+</details>
 
-> **小字看不清？** 先用 `localvision_see` 拿坐标，再把那一块用 `region` 重看一次：`region` 与返回坐标同一空间，裁剪图按原始分辨率 OCR（不缩放），小字清楚很多。
+<details>
+<summary>边界与实现细节（OCR 后端 / 坐标 / 分辨率）</summary>
 
----
+**OCR 只读文字**，会丢失：布局与位置关系、图标、颜色、字体样式、控件状态；图片、图表、视频、游戏画面、地图、设计稿内容；手写、艺术字、极小字号、低对比度文字。
+适合：读文字、找按钮、填表单、点菜单、读报错、切窗口。不适合：玩游戏、看视频、看图找茬、审设计稿、像素级还原 UI。
 
-## 高级：Provider 包装器（可选，默认关闭）
+**OCR 后端用 tesseract.js（WASM）**：不启外部进程、不落 exe、杀软友好，Windows / macOS / Linux 一致。语言数据首次使用自动下载到 `localvision-tessdata/`（`chi_sim` 约 2.5 MB、`eng` 约 5 MB），之后复用；不需要装 tesseract，也不需要任何视觉大模型。`ocrLang: auto` 跟随系统语言（`zh-CN`→`chi_sim`、`zh-Hant`→`chi_tra`、`ja`→`jpn`、`ko`→`kor`、`ru/fr/de/es/pt/it`→对应语言，其余 `eng`）。
 
-如果你不能/不想给 Cortico 打补丁，还有一条**纯插件**的硬拦截路线：做一个 `kind: provider` 的包装器，在 `BaseProvider.respond()` 里把 `function_call_output` 记录中的截图 blob 换成 OCR 文本。
+**坐标**：两边同一套等比缩放 `min(maxW/w, maxH/h, 1)`，只缩不放；多屏 `display` 从 1 起与 `pet_cua_*` 同编号；任一边改了 `maxWidth/maxHeight`，两边要一致。
 
-- **默认不安装、不启用**；只给愿意折腾的用户。
-- 用户需要把 provider 切换到这个包装器（多一步设置）。
-- 包装器必须完整转发流式、工具调用、usage、错误与重试；做错了会影响全部对话。
-- 设计、挂点、代码骨架与注意事项见 [`docs/provider-wrapper.md`](docs/provider-wrapper.md)。
+**分辨率**：任意分辨率缩到 1280×800 以内——1080p→1280×720；2K→1280×720（文字变小）；4K→1280×720（建议 `region`）；21:9→1280×536；32:9→1280×360；竖屏→450×800；小于上限不放大。Windows 先声明 DPI 感知按物理像素截屏（125% 缩放下也是 1920×1080）；macOS 走 `screencapture`，Retina 坐标对齐尚未实测，建议先用小区域验证。
+</details>
 
-> 结论：能打补丁就用上面的核心 hook；不能打补丁、又想要硬保证，再考虑这个包装器。
+<details>
+<summary>排错</summary>
 
----
+- **装了但 World 总览没有？** 先重启进程；扩展页显示「待重启」就是还没载入。重启后在 World 总览手动启用。
+- **OCR 识别 0 个字？** 首次使用需下载语言数据：确认网络可用、`localvision-tessdata/` 可写；中文界面把 `ocrLang` 设为 `chi_sim`。
+- **模型还是调 `pet_cua_screenshot` 传图？** 软约束是两层：环境提示词要求「看屏只用 localvision_see」+ 关掉 cua 的 `afterAction`。要硬拦截用 `npm run patch:hook` 打上核心 hook。
+- **坐标点偏了？** 确认 `screenshotMaxWidth/Height` 与内置 cua 一致，且 `localvision_see` 和 `pet_cua_*` 看的是同一个 `display`。
+- **卡巴斯基报毒？** 不启动 PowerShell、不落 exe，只跑 WASM；仍被拦就把 `localvision-tessdata/` 与 Node 进程加白名单。
+</details>
 
-## 排错
-
-**Q：装了但 World 总览没有？**
-A：先**重启进程**；扩展页显示「待重启」就是还没载入。重启后在 World 总览里手动启用。
-
-**Q：OCR 识别为 0 个字？**
-A：首次使用需要下载语言数据，确认网络可用、`localvision-tessdata/` 可写；中文界面把 `ocrLang` 设为 `chi_sim`。
-
-**Q：模型还是调了 `pet_cua_screenshot` 传图？**
-A：默认只靠两层软约束：① 本插件的环境提示词明确要求「看屏只用 localvision_see，操作传 `screenshot:false`」；② 把内置 cua 的 `screenshot.afterAction` 关掉。要真正硬拦截，用 `npm run patch:hook` 给核心打上工具回执 hook（见「硬拦截」一节），之后无论模型调什么，截图回执都会被就地换成 OCR 文本。
-
-**Q：坐标点偏了？**
-A：确认 `screenshotMaxWidth/Height` 与内置 cua 一致，并且 `localvision_see` 和 `pet_cua_*` 看的是同一个 `display`。
-
-**Q：卡巴斯基报毒/拦截？**
-A：本插件不启动 PowerShell、不落 exe，只跑 tesseract.js 的 WASM；如果仍被拦，把 `localvision-tessdata/` 与 Node 进程加白名单。
-
----
-
-## 开发与校验
+<details>
+<summary>开发与校验</summary>
 
 ```bash
-npm install                    # 或 pnpm install
+npm install
 npm run build:web              # 构建面板 dist/webui.js + dist/webui.css
-node --experimental-transform-types scripts/describe-extension.ts .   # 生成 describe.json
-node --experimental-transform-types scripts/check-extension.ts .      # 契约校验
+npm run describe:extension     # 生成 describe.json
+npm run check:extension        # 契约校验（工具声明与 describe.json 一致性）
+npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动备份）
 ```
 
 装进 Coopanion：扩展页「手动安装」填本目录绝对路径 → 重启 → World 总览启用。
+</details>
 
 ---
-
-## 许可
 
 MIT。
