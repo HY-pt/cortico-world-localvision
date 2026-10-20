@@ -19,6 +19,7 @@ Coopanion / Cortico 的 **World 扩展**，给桌宠提供「屏幕感知 + 点�
 - **视觉兜底（Tier3 看图定位）是【可选开关】，默认关闭**：
   - 仅当 `visionFallbackEnabled = true` **且** 填了 `visionApiBaseUrl` 时才启用；
   - 它是一个**标准 OpenAI 兼容 `/v1` 端点**——用户可填**本地 Ollama / LM Studio** 或**云端**，代码不硬编码、不假设任何后端在运行。
+  - **Ollama 只是这个通用端点的一个示例，不是必需项**：本仓库默认不调用任何视觉模型，只有你显式打开 `visionFallbackEnabled` 并填 `visionApiBaseUrl` 时才会用到它。
 - **彻底解耦本地模型**：本插件不依赖、不硬编码、不假设 Ollama 在运行。视觉端点只是配置项，填不填、填哪个完全由用户决定。
 
 ---
@@ -128,9 +129,9 @@ click= localvision_click({ x: 0.5, y: 0.3 }) // Tier2 归一化坐标回退
 要把"云端不收 cua 截图"真正落地到 Coopanion，**推荐直接装已改造好的 cua 分支**（更彻底、且复用你已填的 Key，无需第二遍配置）：
 
 - **✅ 方式 B（已落地，推荐）**：[`HY-pt/cortico-world-cua`](https://github.com/HY-pt/cortico-world-cua) —— Fork 原版 `cortico-world-cua`，在 `cua_screenshot` 链路里加了本机 OCR 拦截 + 两级截图 + 复用 Coopanion 已配视觉 API 的兜底。安装与配置见该仓库 README。
-- 方式 A（本地代理在 API 边界替换截图）：仍可作为不想改 cua 时的替代方案，但本仓库未内置，需自行搭建代理。
+- 方式 A（本地代理在 API 边界替换截图）：指单独起一个代理进程，在 API 出口把截图换成文字，**不在本仓库内**，需自行搭建。它和本仓库的 `localvision` World 不是一回事——后者是 in-Cortico 的独立实现，不经任何外部代理。
 
-> 结论：**以方式 B（cua 分支）为主**。本 `localvision` 仓库保留作为思路原型与独立 World（若你想要一套不依赖 cua 的 `localvision_*` 工具集可直接启用）。
+> 结论：**以方式 B（cua 分支）为主**。本 `localvision` 仓库保留作为思路原型与独立 World（若你想要一套不依赖 cua 的 `localvision_*` 工具集可直接启用，它不需要任何外部代理）。
 
 ---
 
