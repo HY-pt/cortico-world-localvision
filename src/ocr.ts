@@ -124,6 +124,39 @@ export async function ocrNative(imageB64: string, opts: OcrOptions): Promise<Ocr
   return words;
 }
 
+/** 从 PNG/JPEG 字节里读宽高（截图坐标系的基准）。 */
+export function imageSize(bytes: Uint8Array): { w: number; h: number } | null {
+  // PNG: IHDR 宽高在 16..23，大端
+  if (bytes.length > 24 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    const w = ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0;
+    const h = ((bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]) >>> 0;
+    return w && h ? { w, h } : null;
+  }
+  // JPEG: 扫 SOF0/SOF1/SOF2
+  if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < bytes.length) {
+      if (bytes[i] !== 0xff) {
+        i++;
+        continue;
+      }
+      const marker = bytes[i + 1];
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+        i += 2;
+        continue;
+      }
+      const len = (bytes[i + 2] << 8) | bytes[i + 3];
+      if (marker >= 0xc0 && marker <= 0xc3) {
+        const h = (bytes[i + 5] << 8) | bytes[i + 6];
+        const w = (bytes[i + 7] << 8) | bytes[i + 8];
+        return w && h ? { w, h } : null;
+      }
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
 /** 阅读顺序的纯文本（localvision_ocr 用）。 */
 export function ocrToText(words: OcrWord[]): string {
   if (!words.length) return '';

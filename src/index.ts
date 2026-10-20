@@ -3,34 +3,49 @@
  *
  * 定位：**只做「看屏幕」这一层**，操作电脑交给 Coopanion 内置的 `pet_cua_*` 工具。
  *
- *  - 看屏：截屏 → 本机原生 OCR（Windows WinRT / macOS·Linux tesseract）→ 返回文字 + 截图像素坐标。
+ *  - 看屏：截屏 → 本机 tesseract.js（WASM）OCR → 返回文字 + 截图像素坐标。
  *    默认不把截图发给云端，省掉每帧图片 token 和缓存击穿。
- *  - 兜底：屏幕上一行字都没有（纯图表/图片/视频）时，才把截图作为图片回退（用 Coopanion 已配的模型看图）。
+ *  - 硬拦截（Plan 1）：向打过 hook 的 Cortico 注册「工具回执变换」，在内置 cua 的截图回执
+ *    落库前就把图片换成 OCR 文字——包括 pet_cua_screenshot 和动作后自动附的截图。
+ *  - 兜底：屏幕上一行字都没有（纯图表/图片/视频）时，才把截图作为图片回退。
  *  - 操作：不提供点击/打字工具，直接用内置的 pet_cua_click / pet_cua_type / pet_cua_key /
- *    pet_cua_drag / pet_cua_scroll / pet_cua_windows / pet_cua_focus / pet_cua_wait，并传 screenshot:false。
+ *    pet_cua_drag / pet_cua_scroll / pet_cua_windows / pet_cua_focus / pet_cua_wait。
  *
  * 坐标契约：本地截图与内置 cua 的截图都用 `min(maxW/w, maxH/h, 1)` 等比缩放、默认 1280×800；
  * 同一显示器下，`localvision_see` 返回的截图像素可以直接传给 `pet_cua_click`。
  *
  * 发布校验：pnpm describe:extension / pnpm check:extension
  */
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { WorldDefinition } from 'cortico/world.ts';
+import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { ToolDef, ToolOutcome, WorldHost } from 'cortico/core/types.ts';
 import { captureScreenshot } from './screenshot.ts';
-import { disposeOcr, ocrNative, ocrToText, ocrToLocatedText, type OcrOptions } from './ocr.ts';
+import { disposeOcr, imageSize, ocrNative, ocrToText, ocrToLocatedText, type OcrOptions, type OcrWord } from './ocr.ts';
+
+/** 核心 hook 的签名（老版本 cortico 类型里没有，运行时做能力检测）。 */
+type OutcomeTransform = (out: ToolOutcome, info: { tool: string; world?: string }) => ToolOutcome | Promise<ToolOutcome>;
+type HookHost = WorldHost & { registerToolOutcomeTransform?: (fn: OutcomeTransform) => () => void };
 
 export interface LocalVisionSection {
   /** Cortico World 段开关（框架/部署控制）。 */
   enabled: boolean;
-  /** OCR 语言：Windows 填 WinRT 码（zh-Hans），macOS/Linux 填 tesseract 码（chi_sim）；留空跟随系统。 */
+  /** OCR 语言：chi_sim（中英，默认）、eng、chi_sim+eng；也接受 zh-Hans / en-US 自动映射。 */
   ocrLang: string;
   /** 截图缩放上限；与内置 cua 的 screenshot.maxWidth 对齐，坐标才能直接复用。 */
   screenshotMaxWidth: number;
   screenshotMaxHeight: number;
   /** OCR 找不到文字时，是否把截图作为图片回退（用 Coopanion 已配的模型看图）。 */
   fallbackImage: boolean;
+  /** 硬拦截：注册核心 hook，在内置 cua 的截图回执落库前换成 OCR 文本（需要打过 hook 的 Cortico）。 */
+  hookIntercept: boolean;
+  /** 额外强制拦截的工具名；带 screen/zoom/截图 特征的 blob 无论工具名都会被拦。 */
+  hookTools: string[];
+  /** OCR 找不到文字时：'image' 保留原图，'text' 丢弃图片只留提示。 */
+  onOcrEmpty: 'image' | 'text';
 }
 
 /** 1 起的 display -> 0 起的 monitor；非法值返回 null 由调用方报错。 */
@@ -83,6 +98,44 @@ const TOOL_DECLS = [
   },
 ];
 
+function localvisionConfigGroup(lang: string): ConfigGroup {
+  const zh = lang !== 'en';
+  const K = 'worlds.localvision';
+  return {
+    id: 'world:localvision',
+    owner: 'world:localvision',
+    schema: {
+      type: 'object',
+      title: zh ? '本地视觉' : 'Local vision',
+      properties: {
+        [`${K}.ocrLang`]: {
+          type: 'string',
+          title: zh ? 'OCR 语言' : 'OCR language',
+          description: zh ? 'chi_sim（中英）/ eng / chi_sim+eng' : 'chi_sim / eng / chi_sim+eng',
+          'x-hot': true,
+        },
+        [`${K}.screenshotMaxWidth`]: { type: 'integer', title: zh ? '截图最大宽' : 'Max width', minimum: 320, maximum: 3840, 'x-suffix': 'px', 'x-hot': true },
+        [`${K}.screenshotMaxHeight`]: { type: 'integer', title: zh ? '截图最大高' : 'Max height', minimum: 240, maximum: 2160, 'x-suffix': 'px', 'x-hot': true },
+        [`${K}.fallbackImage`]: { type: 'boolean', title: zh ? '无文字时回退图片' : 'Fall back to image', 'x-hot': true },
+        [`${K}.hookIntercept`]: {
+          type: 'boolean',
+          title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
+          description: zh
+            ? '注册核心变换，把内置 cua 的截图换成 OCR 文字；框架没打 hook 时自动降级。'
+            : 'Replace screenshot tool results with OCR text; degrades when the framework has no hook.',
+          'x-hot': true,
+        },
+        [`${K}.onOcrEmpty`]: {
+          type: 'string',
+          title: zh ? 'OCR 无文字时' : 'When OCR finds nothing',
+          enum: ['image', 'text'],
+          'x-hot': true,
+        },
+      },
+    },
+  };
+}
+
 export default {
   id: 'localvision',
   label: '本地视觉 LocalVision',
@@ -92,6 +145,9 @@ export default {
     screenshotMaxWidth: 1280,
     screenshotMaxHeight: 800,
     fallbackImage: true,
+    hookIntercept: true,
+    hookTools: ['pet_cua_screenshot', 'pet_cua_zoom', 'cua_screenshot', 'cua_zoom'],
+    onOcrEmpty: 'image',
   }),
   describe: {
     tools: TOOL_DECLS,
@@ -102,6 +158,9 @@ export default {
 
 class LocalVisionWorld {
   private host: WorldHost | null = null;
+  private unregisterHook: (() => void) | null = null;
+  /** 同一张截图重复出现时（历史重放、动作后截图）不重复 OCR。 */
+  private readonly ocrCache = new Map<string, OcrWord[]>();
 
   constructor(private ctx: any) {}
 
@@ -111,22 +170,110 @@ class LocalVisionWorld {
 
   async start(host: WorldHost): Promise<void> {
     this.host = host;
+    const hookHost = host as HookHost;
+    if (this.cfg.hookIntercept && typeof hookHost.registerToolOutcomeTransform === 'function') {
+      this.unregisterHook = hookHost.registerToolOutcomeTransform((out, info) => this.transformToolOutcome(out, info));
+    }
   }
 
   async stop(): Promise<void> {
+    this.unregisterHook?.();
+    this.unregisterHook = null;
     this.host = null;
     await disposeOcr();
   }
 
-  /** OCR 参数：语言、traineddata 缓存目录（部署数据目录下），以及本次截图的坐标基准。 */
-  private ocrOptions(img: { scaledWidth: number; scaledHeight: number }): OcrOptions {
+  /** tesseract 语言数据缓存目录（部署数据目录下）。 */
+  private get cacheDir(): string {
     const base = typeof this.ctx?.dataDir === 'string' && this.ctx.dataDir ? this.ctx.dataDir : tmpdir();
+    return join(base, 'localvision-tessdata');
+  }
+
+  /** OCR 参数：语言、traineddata 缓存目录，以及本次截图的坐标基准。 */
+  private ocrOptions(img: { scaledWidth: number; scaledHeight: number }): OcrOptions {
     return {
       lang: this.cfg.ocrLang || undefined,
-      cacheDir: join(base, 'localvision-tessdata'),
+      cacheDir: this.cacheDir,
       width: img.scaledWidth,
       height: img.scaledHeight,
     };
+  }
+
+  private isImage(blob: unknown): boolean {
+    const mime = (blob as { mime?: unknown })?.mime;
+    return typeof mime === 'string' && mime.startsWith('image/');
+  }
+
+  /** 截图特征：内置 cua 的 blob 叫 screen.jpg / zoom.jpg，fallbackText 是「屏幕截图 …」。 */
+  private isScreenshotBlob(blob: unknown): boolean {
+    if (!this.isImage(blob)) return false;
+    const b = blob as { name?: unknown; fallbackText?: unknown };
+    return /screen|zoom|截图|截圖/i.test(`${b.name ?? ''} ${b.fallbackText ?? ''}`);
+  }
+
+  private blobBytes(blob: unknown): Uint8Array | null {
+    const b = blob as { bytes?: unknown; handle?: unknown };
+    if (b?.bytes instanceof Uint8Array) return b.bytes;
+    if (typeof b?.handle === 'string') return this.host?.blob(b.handle)?.bytes ?? null;
+    return null;
+  }
+
+  /**
+   * 核心 hook：工具回执落库前把截图换成 OCR 文字。
+   * 只处理「截图特征」的图片，或明确列进 hookTools 的工具返回的图片；生成图/用户图原样保留。
+   */
+  private async transformToolOutcome(out: ToolOutcome, info: { tool: string; world?: string }): Promise<ToolOutcome> {
+    const blobs = out.blobs;
+    if (!this.cfg.hookIntercept || !blobs?.length) return out;
+    const forced = this.cfg.hookTools.includes(info.tool);
+    const targets = blobs.filter((b) => this.isScreenshotBlob(b) || (forced && this.isImage(b)));
+    if (!targets.length) return out;
+
+    let text = out.text;
+    const kept: NonNullable<ToolOutcome['blobs']> = [];
+    let changed = false;
+
+    for (const blob of blobs) {
+      if (!targets.includes(blob)) {
+        kept.push(blob);
+        continue;
+      }
+      const bytes = this.blobBytes(blob);
+      const dims = bytes ? imageSize(bytes) : null;
+      if (!bytes || !dims) {
+        kept.push(blob);
+        continue;
+      }
+
+      const key = createHash('sha256').update(bytes).digest('hex');
+      let words = this.ocrCache.get(key);
+      if (!words) {
+        words = await ocrNative(Buffer.from(bytes).toString('base64'), {
+          lang: this.cfg.ocrLang || undefined,
+          cacheDir: this.cacheDir,
+          width: dims.w,
+          height: dims.h,
+        });
+        if (this.ocrCache.size > 200) this.ocrCache.clear();
+        this.ocrCache.set(key, words);
+      }
+
+      if (words.length) {
+        text +=
+          `\n\n[本机 OCR] 这张截图已在本地转成文字，未上传图片：\n` +
+          `${ocrToLocatedText(words, dims.w, dims.h)}\n` +
+          `坐标 = 该截图像素，可直接传给 pet_cua_click。`;
+        changed = true;
+      } else if (this.cfg.onOcrEmpty === 'text') {
+        text += `\n\n[本机 OCR] 这张截图没有识别到文字，图片已丢弃。`;
+        changed = true;
+      } else {
+        kept.push(blob);
+      }
+    }
+
+    if (!changed) return out;
+    return { ...out, text, ...(kept.length ? { blobs: kept } : { blobs: undefined }) };
   }
 
   private get acceptsImage(): boolean {
@@ -217,24 +364,28 @@ class LocalVisionWorld {
   }
 
   envPromptVars(): Record<string, string> {
-    return {};
+    return {
+      'localvision.intercept': this.unregisterHook
+        ? '截图已在本地硬拦截：pet_cua_screenshot 返回的图片会被本机 OCR 转成文字，不会上传；正常使用即可。'
+        : '本机没有硬拦截：不要调用 pet_cua_screenshot / pet_cua_zoom（会传图）；动作工具请传 screenshot:false。',
+    };
   }
 
   webUi(lang: string) {
     const zh = lang !== 'en';
-    const guide = zh
-      ? '看屏幕一律用 localvision_see（本机 OCR，返回文字 + 截图像素坐标，不把图片发给云端）；只要文字时用 localvision_ocr。\n' +
-        '操作电脑用内置的 pet_cua_* 工具：点击 pet_cua_click、移动 pet_cua_move、拖拽 pet_cua_drag、滚动 pet_cua_scroll、打字 pet_cua_type、按键 pet_cua_key、窗口 pet_cua_windows / pet_cua_focus、等待 pet_cua_wait。\n' +
-        '- 每次调用都传 screenshot:false，避免动作完成后自动附截图（那会把图片发给云端）；\n' +
-        '- 动作完成后再调用 localvision_see 确认结果。\n' +
-        '不要调用 pet_cua_screenshot / pet_cua_zoom（它们会传图片）；只有 localvision_see 明确说「未识别到文字、已回退为截图图片」时才看图。\n' +
-        '坐标直接用 localvision_see 返回的截图像素，它与 pet_cua_* 一致（同一显示器、同样的 1280×800 缩放）；多屏时给 localvision_see 传同一个 display（1 起）。'
-      : 'Always look at the screen with localvision_see (on-device OCR: text + screenshot-pixel coordinates, no image sent to the cloud); use localvision_ocr when you only need text.\n' +
-        'Operate the computer with the built-in pet_cua_* tools: pet_cua_click, pet_cua_move, pet_cua_drag, pet_cua_scroll, pet_cua_type, pet_cua_key, pet_cua_windows / pet_cua_focus, pet_cua_wait.\n' +
-        '- Pass screenshot:false on every call so an action does not attach a screenshot (that would upload an image);\n' +
-        '- Call localvision_see again after an action to confirm the result.\n' +
-        'Do not call pet_cua_screenshot / pet_cua_zoom (they upload images); only look at an image when localvision_see says it fell back to one.\n' +
-        'Use the screenshot-pixel coordinates localvision_see returns; they match pet_cua_* (same display, same 1280×800 scaling). On multiple displays, pass the same display (1-based) to localvision_see.';
-    return [{ role: 'envPrompt' as const, text: guide }];
+    return {
+      label: '本地视觉 LocalVision',
+      config: [localvisionConfigGroup(lang)],
+      promptDocs: [
+        {
+          key: 'worlds.localvision.envPrompt',
+          title: zh ? '本地视觉环境' : 'Local vision environment',
+          description: zh ? '看屏用 localvision_see，操作用内置 pet_cua_*。' : 'Look with localvision_see, act with the built-in pet_cua_*.',
+          path: fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url)),
+          role: 'envPrompt' as const,
+          vars: [{ name: 'localvision.intercept', description: zh ? '硬拦截是否生效' : 'Whether hard interception is active' }],
+        },
+      ],
+    };
   }
 }

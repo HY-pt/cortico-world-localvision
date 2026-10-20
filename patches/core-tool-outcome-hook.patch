@@ -1,0 +1,123 @@
+# localvision 核心钩子：工具回执落库前可变换（用于把截图换成 OCR 文本）
+# 适用：Coopanion 0.2.5 / build/cortico/src
+# 重新应用：cd resources/app/build/cortico/src && patch -p0 < core-tool-outcome-hook.patch
+
+--- core/types.ts
++++ core/types.ts
+@@ -257,6 +257,16 @@
+   failed?: true;
+ }
+ 
++/**
++ * 工具回执落库前的可选变换。所有已注册的变换按注册顺序串行执行，返回值替换回执；
++ * 抛错或返回非法值时保留上一步的结果。用于把图片回执换成文本（例如本机 OCR），
++ * 使原图不进入 session、不发给模型。
++ */
++export type ToolOutcomeTransform = (
++  out: ToolOutcome,
++  info: { tool: string; world?: string },
++) => ToolOutcome | Promise<ToolOutcome>;
++
+ /** handler 抛错，或返回值既不是字符串也不是带字符串 text 的对象，Core 都转为失败回执。 */
+ export interface ToolDef extends ToolSchema {
+   /** 装配层按标签筛选。空数组表示不分类，组装主工具表时会告警。 */
+@@ -721,6 +731,11 @@
+   /** 当前模型的能力；渲染层据 MIME 支持决定是否附加二进制内容。 */
+   modelFacts: ModelFacts;
+   /**
++   * 注册一个工具回执变换（在回执落库、发给模型之前执行），返回注销函数。
++   * 未打这个 hook 的宿主没有这个方法，插件应做能力检测并降级。
++   */
++  registerToolOutcomeTransform?(fn: ToolOutcomeTransform): () => void;
++  /**
+    * 解析 log:/mem: 句柄；无效或内容不存在时返回 null。
+    * 保存新附件须通过事件或工具回执的 blobs 字段。
+    */
+--- core/loop.ts
++++ core/loop.ts
+@@ -35,6 +35,7 @@
+   ToolCallContext,
+   ToolDef,
+   ToolOutcome,
++  ToolOutcomeTransform,
+   ToolSchema,
+   ToolTag,
+   WakeItem,
+@@ -263,6 +264,8 @@
+   private running = false;
+   private stopFn: (() => void) | null = null;
+   private toolDefs: ToolDef[] = [];
++  /** 工具回执落库前的变换（插件注册；按注册顺序串行执行）。 */
++  private readonly toolOutcomeTransforms = new Set<ToolOutcomeTransform>();
+   private batchesHandled = 0;
+   private roundsLastBatch = 0;
+   /** 跨唤醒批次单调递增的轮序号;每建一份工具 ctx 加一,透传给 ToolCallContext.round */
+@@ -570,10 +573,36 @@
+       });
+   }
+ 
+-  /** 工具回执落库:附件内部化,每份的文本形态接在正文后。 */
+-  private toolResult(callId: string, out: ToolOutcome): ContextRecord {
+-    const blobs = this.d.blobs.intern(out.blobs);
+-    return functionResult(callId, withBlobLines(out.text, blobs), blobs ? { blobs } : {});
++  /** 注册工具回执变换；返回注销函数。插件在 start() 里注册，stop() 里注销。 */
++  registerToolOutcomeTransform(fn: ToolOutcomeTransform): () => void {
++    this.toolOutcomeTransforms.add(fn);
++    return () => {
++      this.toolOutcomeTransforms.delete(fn);
++    };
++  }
++
++  /** 串行执行所有变换；单个变换抛错只记日志，保留上一步结果。 */
++  private async transformToolOutcome(out: ToolOutcome, tool: string): Promise<ToolOutcome> {
++    if (this.toolOutcomeTransforms.size === 0) return out;
++    const world = this.d.toolOwner?.(tool);
++    let cur = out;
++    for (const fn of this.toolOutcomeTransforms) {
++      try {
++        const next = await fn(cur, world ? { tool, world } : { tool });
++        if (next && typeof next.text === 'string') cur = next;
++        else this.d.log.warn('工具回执变换返回非法值，忽略', { tool });
++      } catch (e) {
++        this.d.log.warn('工具回执变换异常', { tool, err: e instanceof Error ? e.message : String(e) });
++      }
++    }
++    return cur;
++  }
++
++  /** 工具回执落库:先过插件变换（例如本机 OCR），再内部化附件。 */
++  private async toolResult(callId: string, out: ToolOutcome, tool: string): Promise<ContextRecord> {
++    const shaped = await this.transformToolOutcome(out, tool);
++    const blobs = this.d.blobs.intern(shaped.blobs);
++    return functionResult(callId, withBlobLines(shaped.text, blobs), blobs ? { blobs } : {});
+   }
+ 
+   /** 一轮结束时先通知 Persona，再通知可见 World。 */
+@@ -1417,7 +1446,7 @@
+         if (out.text.length > LARGE_RESULT_WARN_CHARS) {
+           log.warn('工具回执过长,体积归 World 管', { tool: call.name, chars: out.text.length, limit: LARGE_RESULT_WARN_CHARS });
+         }
+-        results.push(this.toolResult(call.call_id, out));
++        results.push(await this.toolResult(call.call_id, out, call.name));
+       }
+       toolMs = Date.now() - toolsStart;
+       flight.phase = 'done';
+@@ -1492,7 +1521,7 @@
+       const ran = eager?.take(call.call_id);
+       const out = ran !== undefined ? await ran : { text: notExecuted };
+       if (!this.active(generation)) return;
+-      session.append(this.toolResult(call.call_id, out));
++      session.append(await this.toolResult(call.call_id, out, call.name));
+       this.pendingToolCalls.delete(call.call_id);
+     }
+     this.pendingToolCalls.clear();
+--- core/core.ts
++++ core/core.ts
+@@ -561,6 +561,7 @@
+       promotePending: async (cursor, trigger) => lease.active
+         && this.bus.promote((it) => it.event?.cursor === cursor && it.event.source === mod.id, trigger),
+       modelFacts: this.modelFacts(),
++      registerToolOutcomeTransform: (fn) => this.loop.registerToolOutcomeTransform(fn),
+       blob: (handle) => this.resolveBlob(handle),
+       reportUsage: (usage, opts) => {
+         if (lease.active) this.reportWorldUsage(mod.id, usage, opts);

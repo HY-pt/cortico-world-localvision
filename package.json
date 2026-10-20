@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-localvision",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "main": "./src/index.ts",
   "description": "本地视觉 World：本机 OCR（tesseract.js/WASM）把屏幕转成文字+坐标，操作交给 Coopanion 内置电脑操作（pet_cua_*），大幅降低截图 token。",

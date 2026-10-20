@@ -57,6 +57,29 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
 
 ---
 
+## 硬拦截（方案 1，推荐）
+
+软约束（envPrompt + `afterAction=false`）挡不住模型直接调 `pet_cua_screenshot`。要**硬拦截**，给 Cortico 打一个很小的补丁：在工具回执落库前加一个变换钩子。
+
+- 补丁：`patches/core-tool-outcome-hook.patch`（约 120 行，只改 `core/types.ts`、`core/loop.ts`、`core/core.ts`）
+- 应用（Coopanion 0.2.5）：
+
+  ```bash
+  cd "C:/Users/synf/AppData/Local/Programs/Coopanion/resources/app/build/cortico/src"
+  patch -p0 < <本仓库>/patches/core-tool-outcome-hook.patch
+  ```
+
+  先备份这三个文件；Coopanion 升级后补丁会被覆盖，重新打一次即可。
+- 然后**重启 Coopanion**。本插件启动时会检测 `registerToolOutcomeTransform` 并注册：
+  - `pet_cua_screenshot` / `pet_cua_zoom` 的图片 → 本机 OCR 文字 + 坐标，图片不落库、不上传；
+  - 动作后自动附的截图（`pet_cua_click` 等）也会被按 `screen/zoom/截图` 特征识别并替换；
+  - 生成图、用户上传图不受影响（不是截图特征、也不在 `hookTools` 里）。
+- 没打补丁时自动降级为软约束，不会报错。
+
+> 维护成本：这是唯一需要跟 Coopanion 版本走的改动。升级后如果忘了打补丁，插件会退回软约束，不会坏。
+
+---
+
 ## 配置（`worlds.localvision`）
 
 | 键 | 默认 | 说明 |
@@ -66,6 +89,9 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
 | `screenshotMaxWidth` | `1280` | 截图缩放上限；**要和内置 cua 的 `screenshot.maxWidth` 一致**，坐标才能直接复用 |
 | `screenshotMaxHeight` | `800` | 同上 |
 | `fallbackImage` | `true` | OCR 找不到文字时，是否把截图作为图片回退；`false` = 永不传图 |
+| `hookIntercept` | `true` | **硬拦截**：注册核心 hook，把内置 cua 的截图回执换成 OCR 文本（框架没打 hook 时自动降级） |
+| `hookTools` | `["pet_cua_screenshot","pet_cua_zoom","cua_screenshot","cua_zoom"]` | 额外强制拦截的工具名；带 `screen/zoom/截图` 特征的 blob 无论工具名都会被拦 |
+| `onOcrEmpty` | `"image"` | OCR 找不到文字时：`image` 保留原图，`text` 丢弃图片只留提示 |
 
 ---
 
@@ -94,6 +120,19 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
 |---|---|---|
 | `localvision_see` | `display?`（1 起）、`prompt?`（仅提示） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；没文字时按 `fallbackImage` 回退图片 |
 | `localvision_ocr` | `display?` | 纯文本（不含坐标、不回退图片） |
+
+---
+
+## 高级：Provider 包装器（可选，默认关闭）
+
+如果你不能/不想给 Cortico 打补丁，还有一条**纯插件**的硬拦截路线：做一个 `kind: provider` 的包装器，在 `BaseProvider.respond()` 里把 `function_call_output` 记录中的截图 blob 换成 OCR 文本。
+
+- **默认不安装、不启用**；只给愿意折腾的用户。
+- 用户需要把 provider 切换到这个包装器（多一步设置）。
+- 包装器必须完整转发流式、工具调用、usage、错误与重试；做错了会影响全部对话。
+- 设计、挂点、代码骨架与注意事项见 [`docs/provider-wrapper.md`](docs/provider-wrapper.md)。
+
+> 结论：能打补丁就用上面的核心 hook；不能打补丁、又想要硬保证，再考虑这个包装器。
 
 ---
 
