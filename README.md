@@ -70,6 +70,7 @@ Coopanion 内置电脑操作默认每轮把整张截图发给云端。截图每�
   ```
 
   先备份这三个文件；Coopanion 升级后补丁会被覆盖，重新打一次即可。
+  撤销：把同目录下的 `core/*.ts.bak-lv-hook-*` 覆盖回原文件，或直接升级/重装 Coopanion。
 - 然后**重启 Coopanion**。本插件启动时会检测 `registerToolOutcomeTransform` 并注册：
   - `pet_cua_screenshot` / `pet_cua_zoom` 的图片 → 本机 OCR 文字 + 坐标，图片不落库、不上传；
   - 动作后自动附的截图（`pet_cua_click` 等）也会被按 `screen/zoom/截图` 特征识别并替换；
