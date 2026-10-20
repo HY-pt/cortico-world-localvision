@@ -40,8 +40,12 @@ Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧�
 | `screenshotMaxHeight` | `800` | 发给 VLM 的图高上限 |
 | `ocrEnabled` | `true` | 是否开放 `localvision_ocr` |
 | `autoSeeOnStart` | `false` | 预留 |
+| `visionApiBaseUrl` | `''`（回退到 `vlmBaseUrl`） | Tier3 终极兜底的 Vision API 端点（OpenAI 兼容 /chat/completions）。留空则默认仍走本地 Ollama；也可填云端端点 |
+| `visionApiKey` | `''` | 云端 Vision API 的 Bearer Token；本地 Ollama 留空 |
+| `visionApiModel` | `''`（回退到 `vlmModel`） | Tier3 使用的模型名 |
+| `visionApiTimeoutMs` | `20000` | Tier3 调用超时（毫秒），超时即判兜底失败、转清晰报错 |
 
-运行前：`ollama pull minicpm-v2.6`（或任意视觉模型）。
+运行前：`ollama pull minicpm-v2.6`（或任意视觉模型）。若要用云端 Vision API 做终极兜底，另配 `visionApiBaseUrl` + `visionApiKey`。
 
 ## 怎么真正省到钱（集成方式）
 
@@ -53,9 +57,21 @@ Coopanion「操作电脑」每轮都把屏幕截图发给云端。截图每帧�
 - **方式 B（更彻底，待做）**：让 cua World 不再自己上传截图，改为消费 `localvision_see` 的文字。
   需要给 `cortico-world-cua` 打补丁或提供一个替代 World，配合下面的"点击设计"做确定性操作。
 
-## 点击设计（已实现：OCR 锚定 + 归一化回退，分辨率无关）
+## 点击设计（已实现：三级兜底 + 分辨率无关）
 
-`localvision_click` 已实现两条简洁路径，**不依赖结构化元素框**（对极小本地模型没必要）：
+`localvision_click` 采用三级兜底，**不依赖结构化元素框**（对极小本地模型没必要），且全程坐标归一化(0-1)、由本机乘回原生像素：
+
+### 三级兜底触发逻辑
+
+1. **Tier1 — OCR / 视觉锚定（优先，精度最高）**：给出 `text`（如 `"登录"`），本机用本地 VLM 在屏幕上定位该文字的归一化边界框并点其中心。
+   - 触发：传入 `text`。成功即点；失败（定位不到 / 超时 / 异常）**不崩溃**，落入下一级。
+2. **Tier2 — 归一化坐标回退**：给出 `x,y`（0-1），本机直接乘回原生像素点击。
+   - 触发：未走成 Tier1 且传入了 `x,y`。
+3. **Tier3 — 终极兜底（看图定位，仅在必要时传图）**：前两级都失败（或只给了文字意图但没锚定到），重新截图，把图片传给配置的 **Vision API** 让其按自然语言意图（复用 `text` 或显式 `intent`）定位中心坐标再点。
+   - 触发：传入了 `text`/`intent` 且 Tier1 未命中、也无 `x,y`。
+   - **受 `visionApiTimeoutMs` 超时与错误控制**：超时或 API 报错即返回清晰错误文案，**绝不向上抛异常**；未配置 `visionApiBaseUrl` 时默认回退到本地 `vlmBaseUrl`（即默认仍走本地、不额外花钱）。
+
+> 关键保护：Tier1 的 OCR 与 Tier3 的 Vision API 都带超时与 try/catch；任一层失败都只降级，不会让一次点击调用崩溃或陷入死循环。
 
 ### 自适应截图与坐标变换
 

@@ -17,5 +17,8 @@
   },
   "devDependencies": {
     "cortico": "0.2.4"
+  },
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
   }
 }

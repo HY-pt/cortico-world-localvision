@@ -20,13 +20,14 @@
     },
     {
       "name": "localvision_click",
-      "description": "在屏幕上点击。坐标体系为归一化(0-1)，由本机乘回原生像素执行，因此自适应任意分辨率/DPI/宽高比。两种路径：text（按屏幕上文字做 OCR/视觉锚定，精度高，推荐优先）> x,y（直接给归一化坐标，回退用）。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。",
+      "description": "在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。优先级：① text（OCR/视觉锚定，精度最高，优先）> ② x,y（归一化坐标回退）> ③ 前两者都失败则重新截图交给 Vision API 看图定位（终极兜底，仅在必要时传图，可配置 API）。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。",
       "parameters": {
         "type": "object",
         "properties": {
-          "text": { "type": "string", "description": "按屏幕上出现的文字定位并点击其区域中心（OCR/视觉锚定，精度高，优先）" },
-          "x": { "type": "number", "description": "归一化坐标 x（0-1）；与 y 一起作为直接点击（回退用）" },
-          "y": { "type": "number", "description": "归一化坐标 y（0-1）；与 x 一起作为直接点击（回退用）" }
+          "text": { "type": "string", "description": "按屏幕上出现的文字定位并点击其区域中心（Tier1，OCR/视觉锚定，精度高，优先）" },
+          "x": { "type": "number", "description": "归一化坐标 x（0-1）；与 y 一起作为 Tier2 直接点击（回退用）" },
+          "y": { "type": "number", "description": "归一化坐标 y（0-1）；与 x 一起作为 Tier2 直接点击（回退用）" },
+          "intent": { "type": "string", "description": "Tier3 终极兜底时用：用自然语言描述要点的目标（如\"右上角的关闭按钮\"）；缺省时复用 text" }
         }
       },
       "tags": ["action"]
