@@ -4,7 +4,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "description": "本地视觉 World：截屏在本机由本地视觉模型转成稳定文字，云端只收文字，提升缓存命中、降低 token 消耗。",
-  "keywords": ["cortico-world"],
+  "keywords": [
+    "cortico-world"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -16,9 +18,11 @@
     "describe": "describe.json"
   },
   "devDependencies": {
-    "cortico": "0.2.4"
+    "cortico": "^0.2.4"
   },
   "scripts": {
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "describe:extension": "node --experimental-transform-types scripts/describe-extension.ts",
+    "check:extension": "node --experimental-transform-types scripts/check-extension.ts"
   }
 }

@@ -2,35 +2,62 @@
   "tools": [
     {
       "name": "localvision_see",
-      "description": "截取当前屏幕，在本机用本地视觉模型转成稳定的文字描述（可见窗口/应用、关键文字、可疑的可点击元素及其大致位置），不向云端发送任何图片。用于\"看\"屏幕。",
+      "description": "截取当前屏幕，用已配置的视觉端点（本地或云端）转成稳定的文字描述（可见窗口/应用、关键文字、可疑的可点击元素及其大致位置），不向云端以外发送截图。用于\"看\"屏幕：屏幕没变时描述应一致，提升缓存命中、降低 token。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。",
       "parameters": {
         "type": "object",
         "properties": {
-          "prompt": { "type": "string", "description": "可选的关注点，例如\"只看右上角的按钮\"或\"找出登录表单\"。" },
-          "monitor": { "type": "integer", "description": "可选：截哪块屏（0-based，默认主屏）。多屏环境可用。" }
+          "prompt": {
+            "type": "string",
+            "description": "可选的关注点，例如\"只看右上角的按钮\"或\"找出登录表单\"。"
+          },
+          "monitor": {
+            "type": "integer",
+            "description": "可选：截哪块屏（0-based，默认主屏）。多屏环境可用。"
+          }
         }
       },
-      "tags": ["perception"]
+      "tags": [
+        "perception"
+      ]
     },
     {
       "name": "localvision_ocr",
-      "description": "截取屏幕并用本地模型逐字提取可见文字（OCR），返回纯文本，不发送图片。",
-      "parameters": { "type": "object", "properties": {} },
-      "tags": ["perception"]
+      "description": "截取屏幕并用视觉端点逐字提取可见文字（OCR），返回纯文本。适合读取具体文字（错误消息、字段名）。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "tags": [
+        "perception"
+      ]
     },
     {
       "name": "localvision_click",
-      "description": "在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。优先级：① text（OCR/视觉锚定，精度最高，优先）> ② x,y（归一化坐标回退）> ③ 前两者都失败则重新截图交给 Vision API 看图定位（终极兜底，仅在必要时传图，可配置 API）。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。",
+      "description": "在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。优先级：① text（OCR/视觉锚定，精度最高，优先；需视觉端点）> ② x,y（归一化坐标回退，无模型依赖，最轻量，始终可用）> ③ 前两者都失败则重新截图交给视觉端点看图定位（终极兜底，仅在必要时传图；需视觉端点）。默认轻量模式下仅 x,y 可用。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。",
       "parameters": {
         "type": "object",
         "properties": {
-          "text": { "type": "string", "description": "按屏幕上出现的文字定位并点击其区域中心（Tier1，OCR/视觉锚定，精度高，优先）" },
-          "x": { "type": "number", "description": "归一化坐标 x（0-1）；与 y 一起作为 Tier2 直接点击（回退用）" },
-          "y": { "type": "number", "description": "归一化坐标 y（0-1）；与 x 一起作为 Tier2 直接点击（回退用）" },
-          "intent": { "type": "string", "description": "Tier3 终极兜底时用：用自然语言描述要点的目标（如\"右上角的关闭按钮\"）；缺省时复用 text" }
+          "text": {
+            "type": "string",
+            "description": "按屏幕上出现的文字定位并点击其区域中心（Tier1，OCR/视觉锚定，精度高，优先）"
+          },
+          "x": {
+            "type": "number",
+            "description": "归一化坐标 x（0-1）；与 y 一起作为 Tier2 直接点击（回退用，始终可用）"
+          },
+          "y": {
+            "type": "number",
+            "description": "归一化坐标 y（0-1）；与 x 一起作为 Tier2 直接点击（回退用，始终可用）"
+          },
+          "intent": {
+            "type": "string",
+            "description": "Tier3 终极兜底时用：用自然语言描述要点的目标（如\"右上角的关闭按钮\"）；缺省时复用 text"
+          }
         }
       },
-      "tags": ["action"]
+      "tags": [
+        "action"
+      ]
     }
   ],
   "events": []

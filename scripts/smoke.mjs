@@ -1,17 +1,20 @@
 /**
- * 烟测：验证 localvision 的本地视觉端点（Ollama / OpenAI 兼容）连通性与请求格式。
- * 这对应"开始接 Ollama"的集成验证——不依赖 Cortico，直接用 fetch 复刻插件里的请求形状。
+ * 烟测：验证 localvision 的「通用视觉端点」（OpenAI 兼容 /v1）连通性与标准 image_url 请求格式。
+ * 不依赖 Cortico，直接用 fetch 复刻插件里的请求形状。
  *
- * 前置：
- *   ollama serve                 # 启动 Ollama（默认 127.0.0.1:11434）
- *   ollama pull minicpm-v2.6     # 或任意支持视觉的模型
+ * 前置（任选其一）：
+ *   ollama serve                                   # 本地 Ollama（默认 127.0.0.1:11434）
+ *   ollama pull minicpm-v2.6                        # 或任意支持视觉的模型
+ *   # 或：把 visionApiBaseUrl 指向任意云端 OpenAI 兼容端点并填 VISION_API_KEY
+ *
  * 运行：
  *   node scripts/smoke.mjs
- *   VLM_BASE_URL=http://127.0.0.1:11434/v1 VLM_MODEL=minicpm-v2.6 node scripts/smoke.mjs
+ *   VISION_API_BASE_URL=http://127.0.0.1:11434/v1 VISION_API_MODEL=minicpm-v2.6 node scripts/smoke.mjs
  */
 
-const BASE = process.env.VLM_BASE_URL || 'http://127.0.0.1:11434/v1';
-const MODEL = process.env.VLM_MODEL || 'minicpm-v2.6';
+const BASE = process.env.VISION_API_BASE_URL || 'http://127.0.0.1:11434/v1';
+const MODEL = process.env.VISION_API_MODEL || 'minicpm-v2.6';
+const KEY = process.env.VISION_API_KEY || '';
 
 // 1x1 红点 PNG（仅用于验证请求格式，不用于真实识别）
 const IMG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC';
@@ -20,9 +23,12 @@ const IMG_TEXT =
   'iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAUklEQVR4nO3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHgZGkgAAb0jfsAAAAAElFTkSuQmCC';
 
 async function postChat(payload) {
-  const res = await fetch(BASE + '/chat/completions', {
+  const url = BASE.replace(/\/+$/, '') + '/chat/completions';
+  const headers = { 'Content-Type': 'application/json' };
+  if (KEY) headers['Authorization'] = `Bearer ${KEY}`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -34,14 +40,14 @@ async function postChat(payload) {
 }
 
 async function main() {
-  console.log('BASE =', BASE, '| MODEL =', MODEL);
+  console.log('BASE =', BASE, '| MODEL =', MODEL, KEY ? '| (with Bearer key)' : '| (no key)');
 
-  // 0) 模型是否就绪
+  // 0) 本地 Ollama 可额外探测已拉模型（云端端点无此接口，忽略失败）
   try {
     const root = BASE.replace(/\/v1\/?$/, '');
     const tags = await fetch(root + '/api/tags').then((r) => r.json()).catch(() => null);
     const names = tags?.models?.map((m) => m.name) ?? [];
-    console.log('已拉取模型:', names.join(', ') || '(无法读取 /api/tags，请确认 Ollama 已启动)');
+    console.log('已拉取模型:', names.join(', ') || '(无法读取 /api/tags，若为云端端点属正常)');
     if (names.length && !names.some((n) => n.includes(MODEL))) {
       console.warn(`警告：未找到 ${MODEL}，请先 ollama pull ${MODEL}`);
     }
@@ -49,20 +55,28 @@ async function main() {
     /* 忽略，后面会再失败 */
   }
 
-  // 1) Tier1/Tier2 使用的 Ollama 原生 images 字段格式（SEE 描述）
+  // 1) 标准 image_url 格式（SEE 描述）—— vlm.ts 全程使用此格式（本地/云端通用）
   try {
     const desc = await postChat({
       model: MODEL,
-      messages: [{ role: 'user', content: '用中文一句话描述这张图的主要颜色。', images: [IMG] }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '用中文一句话描述这张图的主要颜色。' },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${IMG}` } },
+          ],
+        },
+      ],
       stream: false,
     });
-    console.log('\n[SEE] images 字段格式返回：', desc.slice(0, 200));
+    console.log('\n[SEE] image_url 格式返回：', desc.slice(0, 200));
   } catch (e) {
     console.error('\n[SEE] 失败：', e.message);
     throw e;
   }
 
-  // 2) Tier3 使用的 OpenAI image_url 格式（Vision API，可指向云端）
+  // 2) 标准 image_url 格式（Tier1 锚定 / Tier3 看图定位 复用同一格式）
   try {
     const desc = await postChat({
       model: MODEL,
@@ -77,17 +91,16 @@ async function main() {
       ],
       stream: false,
     });
-    console.log('[Tier3] image_url 格式返回：', desc.slice(0, 200));
+    console.log('[锚定/Tier3] image_url 格式返回：', desc.slice(0, 200));
   } catch (e) {
-    console.error('[Tier3] image_url 格式失败：', e.message);
-    console.error('（若指向本地 Ollama，请确认其 OpenAI 兼容端点支持 image_url；否则 Tier3 可改用云端端点）');
+    console.error('[锚定/Tier3] image_url 格式失败：', e.message);
   }
 
-  console.log('\nOK：端点连通且两种请求格式均可用，可继续在 Coopanion/Cortico 中加载本 World。');
+  console.log('\nOK：端点连通且标准 image_url 请求格式可用，可继续在 Coopanion/Cortico 中加载本 World。');
 }
 
 main().catch((e) => {
   console.error('\n烟测未通过：', e?.message ?? e);
-  console.error('请确认：ollama serve 已启动，且已执行 ollama pull ' + MODEL);
+  console.error('请确认：视觉端点已启动（ollama serve 或云端可达），且模型已就绪（ollama pull ' + MODEL + '）');
   process.exit(1);
 });
