@@ -53,9 +53,34 @@ export function tesseractLang(lang?: string): string {
   return l;
 }
 
-function langsOf(lang?: string): string {
+/** 当前系统语言（Node 带完整 ICU 时可用）。 */
+export function systemLocale(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || '';
+  } catch {
+    return '';
+  }
+}
+
+/** 系统语言 -> tesseract 语言；认不出时英文。 */
+export function autoOcrLang(locale = systemLocale()): string {
+  const l = locale.toLowerCase();
+  if (l.startsWith('zh')) return /hant|tw|hk|mo/.test(l) ? 'chi_tra' : 'chi_sim';
+  if (l.startsWith('ja')) return 'jpn';
+  if (l.startsWith('ko')) return 'kor';
+  if (l.startsWith('ru')) return 'rus';
+  if (l.startsWith('fr')) return 'fra';
+  if (l.startsWith('de')) return 'deu';
+  if (l.startsWith('es')) return 'spa';
+  if (l.startsWith('pt')) return 'por';
+  if (l.startsWith('it')) return 'ita';
+  return 'eng';
+}
+
+/** 配置值 -> 实际送给 tesseract 的语言串。 */
+export function resolveOcrLangs(lang?: string): string {
   const l = (lang || '').trim();
-  if (!l) return 'chi_sim';
+  if (!l || l.toLowerCase() === 'auto') return autoOcrLang();
   if (l.includes('+')) return l;
   return tesseractLang(l);
 }
@@ -69,7 +94,11 @@ async function getWorker(langs: string, cachePath: string): Promise<Worker> {
   workerKey = key;
   workerPromise = (async () => {
     await mkdir(cachePath, { recursive: true });
-    return createWorker(langs, 1, { cachePath });
+    const worker = await createWorker(langs, 1, { cachePath });
+    // tesseract.js 的 worker 默认 PSM 不是 3（对 UI 截图会切成单块，中文识别明显变差）；
+    // 固定成 3（自动分页），实测同一张图内容准确率最高。
+    await worker.setParameters({ tessedit_pageseg_mode: '3' });
+    return worker;
   })().catch((err) => {
     workerPromise = null;
     workerKey = '';
@@ -92,7 +121,7 @@ export async function disposeOcr(): Promise<void> {
 }
 
 export async function ocrNative(imageB64: string, opts: OcrOptions): Promise<OcrWord[]> {
-  const langs = langsOf(opts.lang);
+  const langs = resolveOcrLangs(opts.lang);
   const cachePath = opts.cacheDir || join(tmpdir(), 'localvision-tessdata');
   const worker = await getWorker(langs, cachePath);
   const { data } = await worker.recognize(Buffer.from(imageB64, 'base64'), {}, { blocks: true, text: true });
@@ -157,6 +186,14 @@ export function imageSize(bytes: Uint8Array): { w: number; h: number } | null {
   return null;
 }
 
+/** tesseract 会把每个汉字当独立词、中间插空格；把汉字/中文标点之间的空格合掉。 */
+export function joinCjk(s: string): string {
+  const cjk = '\\u4e00-\\u9fff';
+  return s
+    .replace(new RegExp(`(?<=[${cjk}])\\s+(?=[${cjk}，。！？、；：…])`, 'g'), '')
+    .replace(new RegExp(`(?<=[，。！？、；：…])\\s+(?=[${cjk}])`, 'g'), '');
+}
+
 /** 阅读顺序的纯文本（localvision_ocr 用）。 */
 export function ocrToText(words: OcrWord[]): string {
   if (!words.length) return '';
@@ -166,23 +203,33 @@ export function ocrToText(words: OcrWord[]): string {
     const row = words.filter((w) => w.line === l).sort((a, b) => a.x - b.x).map((w) => w.text);
     if (row.length) lines.push(row.join(' '));
   }
-  return lines.join('\n');
+  return joinCjk(lines.join('\n'));
 }
 
 /** 归一化框 -> 截图像素中心点。 */
 export function ocrItems(words: OcrWord[], W: number, H: number): OcrItem[] {
-  return words.map((w) => ({
-    text: w.text,
-    cx: Math.round((w.x + w.w / 2) * W),
-    cy: Math.round((w.y + w.h / 2) * H),
-    line: w.line,
-  }));
+  return ocrItemsMapped(words, (nx, ny) => ({ x: nx * W, y: ny * H }));
+}
+
+export type OcrPointMap = (nx: number, ny: number) => { x: number; y: number };
+
+/** 归一化框的**中心**经 `map` 映射到目标坐标（用于裁剪图 → 全屏截图坐标）。 */
+export function ocrItemsMapped(words: OcrWord[], map: OcrPointMap): OcrItem[] {
+  return words.map((w) => {
+    const p = map(w.x + w.w / 2, w.y + w.h / 2);
+    return { text: w.text, cx: Math.round(p.x), cy: Math.round(p.y), line: w.line };
+  });
+}
+
+/** 阅读顺序文本 + 每个词的中心坐标（`map` 决定坐标系）。 */
+export function ocrToLocatedTextMapped(words: OcrWord[], map: OcrPointMap): string {
+  if (!words.length) return '';
+  const reading = ocrToText(words);
+  const located = ocrItemsMapped(words, map).map((it) => `- ${it.text} @ (${it.cx}, ${it.cy})`).join('\n');
+  return `可见文字(阅读顺序):\n${reading}\n\n关键文字及中心坐标(截图像素):\n${located}`;
 }
 
 /** 阅读顺序文本 + 每个词的截图像素中心坐标（localvision_see 用）。 */
 export function ocrToLocatedText(words: OcrWord[], W: number, H: number): string {
-  if (!words.length) return '';
-  const reading = ocrToText(words);
-  const located = ocrItems(words, W, H).map((it) => `- ${it.text} @ (${it.cx}, ${it.cy})`).join('\n');
-  return `可见文字(阅读顺序):\n${reading}\n\n关键文字及中心坐标(截图像素):\n${located}`;
+  return ocrToLocatedTextMapped(words, (nx, ny) => ({ x: nx * W, y: ny * H }));
 }

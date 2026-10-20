@@ -1,0 +1,296 @@
+/* ===== LocalVision WebUI —— 现代、轻量、主题自适应的面板样式 =====
+   全部作用域限定在 .lv-app（面板根容器），不污染其它面板。
+   颜色用半透明层 + 固定强调色，亮/暗主题都可读；暗色下自动切换描边与填充。 */
+
+.lv-app {
+  --lv-accent: #5b8cff;
+  --lv-on: #34d399;
+  --lv-warn: #f59e0b;
+  --lv-bad: #f87171;
+  --lv-line: rgba(128, 128, 128, 0.18);
+  --lv-line-strong: rgba(128, 128, 128, 0.34);
+  --lv-fill: rgba(128, 128, 128, 0.06);
+  --lv-fill-2: rgba(128, 128, 128, 0.11);
+  --lv-muted: rgba(140, 140, 140, 0.95);
+  --lv-radius: 12px;
+  --lv-radius-sm: 8px;
+  font: inherit;
+  color: inherit;
+  -webkit-text-size-adjust: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  .lv-app {
+    --lv-line: rgba(255, 255, 255, 0.12);
+    --lv-line-strong: rgba(255, 255, 255, 0.24);
+    --lv-fill: rgba(255, 255, 255, 0.05);
+    --lv-fill-2: rgba(255, 255, 255, 0.10);
+    --lv-muted: rgba(196, 196, 196, 0.85);
+  }
+}
+
+/* 卡片之间的呼吸感 */
+.lv-app > .sheet {
+  margin: 0 0 14px;
+}
+
+/* 嵌套的折叠卡（foldSheet）在连接卡内留出间距 */
+.lv-app .sheet .sheet {
+  margin: 10px 0;
+}
+
+/* 表单字段：左侧标签、右侧控件的两栏网格，窄屏自动堆叠 */
+.lv-app .field {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin: 9px 0;
+}
+.lv-app .field > :first-child {
+  opacity: 0.72;
+  font-size: 13px;
+}
+@media (max-width: 540px) {
+  .lv-app .field {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .lv-app .field > :first-child {
+    margin-top: 2px;
+  }
+}
+
+/* 输入框 / 下拉：统一圆角、描边、聚焦光环 */
+.lv-app input.field,
+.lv-app select.field,
+.lv-app textarea.field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--lv-line);
+  border-radius: var(--lv-radius-sm);
+  background: var(--lv-fill);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.lv-app input.field:focus,
+.lv-app select.field:focus,
+.lv-app textarea.field:focus {
+  outline: none;
+  border-color: var(--lv-accent);
+  background: var(--lv-fill-2);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lv-accent) 26%, transparent);
+}
+.lv-app input.field::placeholder,
+.lv-app textarea.field::placeholder {
+  color: var(--lv-muted);
+}
+
+/* 勾选框更顺手 */
+.lv-app label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  cursor: pointer;
+}
+.lv-app label.check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--lv-accent);
+}
+
+/* 按钮：轻量微交互 + 可见焦点环 */
+.lv-app .btn {
+  transition: transform 0.08s ease, background 0.15s ease, border-color 0.15s ease, filter 0.15s ease;
+}
+.lv-app .btn:hover {
+  filter: brightness(1.07);
+}
+.lv-app .btn:active {
+  transform: translateY(1px);
+}
+.lv-app .btn:focus-visible {
+  outline: 2px solid var(--lv-accent);
+  outline-offset: 2px;
+}
+
+/* 状态行 */
+.lv-app .rowbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.lv-app .msgline {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--lv-muted);
+  margin: 6px 0;
+  word-break: break-word;
+}
+.lv-app .msgline.bad {
+  color: var(--lv-bad);
+}
+
+/* 状态胶囊（pill）：成功 / 失败 / 中性 三色 */
+.lv-app .pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--lv-muted);
+  background: var(--lv-fill);
+  border: 1px solid var(--lv-line);
+}
+.lv-app .pill.on {
+  color: var(--lv-on);
+  background: color-mix(in srgb, var(--lv-on) 16%, transparent);
+  border-color: color-mix(in srgb, var(--lv-on) 40%, transparent);
+}
+.lv-app .pill.off {
+  color: var(--lv-bad);
+  background: color-mix(in srgb, var(--lv-bad) 16%, transparent);
+  border-color: color-mix(in srgb, var(--lv-bad) 40%, transparent);
+}
+
+/* 读数标签（chip） */
+.lv-app .chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  border: 1px solid var(--lv-line);
+  background: var(--lv-fill);
+}
+.lv-app .chip.accent {
+  color: var(--lv-accent);
+  background: color-mix(in srgb, var(--lv-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--lv-accent) 38%, transparent);
+}
+.lv-app .chip.warn {
+  color: var(--lv-warn);
+  background: color-mix(in srgb, var(--lv-warn) 16%, transparent);
+  border-color: color-mix(in srgb, var(--lv-warn) 40%, transparent);
+}
+
+/* 状态表 */
+.lv-app .tablewrap {
+  margin: 10px 0;
+  border: 1px solid var(--lv-line);
+  border-radius: var(--lv-radius);
+  overflow: hidden;
+}
+.lv-app .tablewrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.lv-app .tablewrap th {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--lv-fill);
+  color: var(--lv-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--lv-line);
+}
+.lv-app .tablewrap td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--lv-line);
+  vertical-align: middle;
+}
+.lv-app .tablewrap tr:last-child td {
+  border-bottom: none;
+}
+.lv-app .mono {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* 分区标题（section） */
+.lv-app .section {
+  margin: 12px 0 4px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* 诊断报告 */
+.lv-app .lv-body {
+  margin-top: 8px;
+}
+.lv-app .lv-row {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--lv-line);
+  font-size: 13px;
+}
+.lv-app .lv-label {
+  opacity: 0.65;
+}
+.lv-app .lv-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 540px) {
+  .lv-app .lv-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+.lv-app .lv-tip {
+  display: block;
+  padding: 7px 10px;
+  margin: 6px 0;
+  border-left: 3px solid var(--lv-warn);
+  background: color-mix(in srgb, var(--lv-warn) 11%, transparent);
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.lv-app .lv-raw {
+  margin-top: 10px;
+}
+.lv-app .lv-raw summary {
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 4px 0;
+}
+.lv-app .lv-doctor {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+  background: var(--lv-fill);
+  border: 1px solid var(--lv-line);
+  border-radius: 8px;
+}
+
+/* 禁用态：关闭「启用视觉模型」后，端点/调参折叠卡整体灰掉且不可点（配置保留，只是不生效） */
+.lv-app .sheet.lv-off {
+  opacity: 0.45;
+  filter: grayscale(0.9);
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.lv-app .sheet.lv-off > summary {
+  cursor: default;
+}
+
+/* 禁用提示行 */
+.lv-app .msgline.lv-hint {
+  color: var(--lv-muted);
+  font-size: 0.92em;
+}

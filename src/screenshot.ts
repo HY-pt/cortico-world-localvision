@@ -115,28 +115,43 @@ function buildWindowsCapturePs(
 ): string {
   const o = out.replace(/\\/g, '\\\\').replace(/'/g, "''");
   const d = dimFile.replace(/\\/g, '\\\\').replace(/'/g, "''");
-  // region 以 JSON 形式传入 PowerShell，避免引号地狱
-  const regJson = region
-    ? `{"x":${region.x},"y":${region.y},"w":${region.w},"h":${region.h}}`
-    : '$null';
+  // region 直接传四个数字，避免把 JSON 当 PowerShell 表达式解析
+  const rx = region ? Math.max(0, Math.round(region.x)) : 0;
+  const ry = region ? Math.max(0, Math.round(region.y)) : 0;
+  const rw = region ? Math.max(0, Math.round(region.w)) : 0;
+  const rh = region ? Math.max(0, Math.round(region.h)) : 0;
   return [
     '$ErrorActionPreference="Stop"',
+    // 先声明 DPI 感知，否则 Screen.Bounds 给的是逻辑尺寸（125% 下 1920×1080 会读成 1536×864）
+    'try {',
+    'Add-Type -TypeDefinition @"',
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public class LvDpi {',
+    '  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);',
+    '  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();',
+    '}',
+    '"@',
+    '} catch {}',
+    '$dpiOk=$false',
+    'try { $dpiOk=[LvDpi]::SetProcessDpiAwarenessContext([IntPtr]::new(-4)) } catch {}',
+    'if(-not $dpiOk){ try { [LvDpi]::SetProcessDPIAware() | Out-Null } catch {} }',
     'try { [System.Windows.Forms.Application]::SetHighDpiMode("PerMonitorV2") | Out-Null } catch {}',
     'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
     '$screens=[System.Windows.Forms.Screen]::AllScreens',
     `$scr = if ((${monitorIdx} -ge 0) -and (${monitorIdx} -lt $screens.Length)) { $screens[${monitorIdx}] } else { [System.Windows.Forms.Screen]::PrimaryScreen }`,
     '$b=$scr.Bounds',
     `$fw=$b.Width; $fh=$b.Height`,
-    `$reg=${regJson}`,
-    'if($reg -and ($reg.w -gt 0) -and ($reg.h -gt 0)){',
-    '  $rx=[Math]::Max(0,[int]$reg.x); $ry=[Math]::Max(0,[int]$reg.y)',
-    '  $rw=[Math]::Min([int]$reg.w, $fw-$rx); $rh=[Math]::Min([int]$reg.h, $fh-$ry)',
+    `$regX=${rx}; $regY=${ry}; $regW=${rw}; $regH=${rh}`,
+    'if($regW -gt 0 -and $regH -gt 0){',
+    '  $rx=[Math]::Max(0,[int]$regX); $ry=[Math]::Max(0,[int]$regY)',
+    '  $rw=[Math]::Min([int]$regW, $fw-$rx); $rh=[Math]::Min([int]$regH, $fh-$ry)',
     '  if($rw -le 0){$rw=$fw}; if($rh -le 0){$rh=$fh}',
     '} else { $rx=0; $ry=0; $rw=$fw; $rh=$fh }',
     '$bmp=New-Object System.Drawing.Bitmap($rw,$rh)',
     '$g=[System.Drawing.Graphics]::FromImage($bmp)',
     '$g.CopyFromScreen($rx,$ry,0,0,$bmp.Size)',
-    `$scale=[Math]::Min(${maxW}/$rw,${maxH}/$rh,1)`,
+    `$scale=[Math]::Min([Math]::Min(${maxW}/$rw,${maxH}/$rh),1)`,
     '$sw=$rw; $sh=$rh',
     'if($scale -lt 1){',
     '  $sw=[int][Math]::Round($rw*$scale); $sh=[int][Math]::Round($rh*$scale);',
@@ -148,7 +163,8 @@ function buildWindowsCapturePs(
     '}',
     `$bmp.Save('${o}')`,
     '$g.Dispose(); $bmp.Dispose()',
-    `$mon=$scr.DeviceName`,
-    `"{""nativeWidth"":$fw,""nativeHeight"":$fh,""regionX"":$rx,""regionY"":$ry,""regionW"":$rw,""regionH"":$rh,""scaledWidth"":$sw,""scaledHeight"":$sh,""scale"":$scale,""monitor"":$mon}" | Out-File -Encoding ascii '${d}'`,
+    `$mon=$scr.DeviceName.Replace("\\","/")`,
+    '$scaleInv=$scale.ToString([System.Globalization.CultureInfo]::InvariantCulture)',
+    `"{""nativeWidth"":$fw,""nativeHeight"":$fh,""regionX"":$rx,""regionY"":$ry,""regionW"":$rw,""regionH"":$rh,""scaledWidth"":$sw,""scaledHeight"":$sh,""scale"":$scaleInv,""monitor"":""$mon""}" | Out-File -Encoding ascii '${d}'`,
   ].join('\n');
 }
