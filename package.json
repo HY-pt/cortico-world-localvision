@@ -1,0 +1,21 @@
+{
+  "name": "cortico-world-localvision",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "description": "本地视觉 World：截屏在本机由本地视觉模型转成稳定文字，云端只收文字，提升缓存命中、降低 token 消耗。",
+  "keywords": ["cortico-world"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "displayName": "本地视觉 LocalVision",
+    "describe": "describe.json"
+  },
+  "devDependencies": {
+    "cortico": "0.2.4"
+  }
+}

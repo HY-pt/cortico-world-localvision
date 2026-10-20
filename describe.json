@@ -1,0 +1,36 @@
+{
+  "tools": [
+    {
+      "name": "localvision_see",
+      "description": "截取当前主屏幕，在本机用本地视觉模型转成稳定的文字描述（可见窗口/应用、关键文字、可疑的可点击元素及其大致位置），不向云端发送任何图片。用于\"看\"屏幕。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": { "type": "string", "description": "可选的关注点，例如\"只看右上角的按钮\"或\"找出登录表单\"。" }
+        }
+      },
+      "tags": ["perception"]
+    },
+    {
+      "name": "localvision_ocr",
+      "description": "截取屏幕并用本地模型逐字提取可见文字（OCR），返回纯文本，不发送图片。",
+      "parameters": { "type": "object", "properties": {} },
+      "tags": ["perception"]
+    },
+    {
+      "name": "localvision_click",
+      "description": "[接口占位] 按元素 id 或屏幕上出现的文字或像素坐标点击。当前为占位，尚未实现本地解析与执行。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "elementId": { "type": "string", "description": "localvision_see 返回的元素 id（优先）" },
+          "text": { "type": "string", "description": "按屏幕上出现的文字点击（OCR 锚定）" },
+          "x": { "type": "number", "description": "可选：直接像素坐标 x（回退用）" },
+          "y": { "type": "number", "description": "可选：直接像素坐标 y（回退用）" }
+        }
+      },
+      "tags": ["stub"]
+    }
+  ],
+  "events": []
+}
