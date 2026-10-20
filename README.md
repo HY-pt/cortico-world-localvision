@@ -7,10 +7,11 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 ## 安装
 
 1. 拿到代码，记住**绝对路径**：`git clone https://github.com/HY-pt/cortico-world-localvision.git`
-2. 扩展页 → **手动安装** → 填这个绝对路径 → **重启 Coopanion**（显示「待重启」就是还没载入）。
-3. 打开 **World 总览**，启用「本地视觉 LocalVision」（新 World 默认待命）。
-4. **习惯 → 电脑操作**：确认「使用电脑」「允许操作鼠标和键盘」已打开（内置 cua 的开关）。
-5. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`。
+2. **在源码目录跑 `npm install`**（装 OCR 依赖 tesseract.js；手动安装只做链接、不会自动装依赖，少了这步一运行就报模块缺失）。
+3. 扩展页 → **手动安装** → 填这个绝对路径 → **重启 Coopanion**（显示「待重启」就是还没载入）。
+4. 打开 **World 总览**，启用「本地视觉 LocalVision」（新 World 默认待命）。
+5. **习惯 → 电脑操作**：确认「使用电脑」「允许操作鼠标和键盘」已打开（内置 cua 的开关）。
+6. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`。
 
 装好后，对话里说「看一眼屏幕」，模型应当返回文字 + 坐标，而不是 `pet_cua_screenshot` 传图。
 
