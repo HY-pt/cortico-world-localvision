@@ -2,13 +2,13 @@
   "tools": [
     {
       "name": "localvision_see",
-      "description": "截取当前屏幕，用已配置的视觉端点（本地或云端）转成稳定的文字描述（可见窗口/应用、关键文字、可疑的可点击元素及其大致位置），不向云端以外发送截图。用于\"看\"屏幕：屏幕没变时描述应一致，提升缓存命中、降低 token。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。",
+      "description": "截取当前屏幕并感知内容。默认（轻量模式，未启用视觉兜底）用本机原生 OCR 提取可见文字作为\"屏幕描述\"返回给你——不调用任何视觉模型、不联网、不传图，最轻量。若启用了视觉兜底且配置了 visionApiBaseUrl，则改用视觉端点生成更丰富的描述。无论哪种，都只返回文字、不把原始截图发给云端，从而提升缓存命中、降低 token。",
       "parameters": {
         "type": "object",
         "properties": {
           "prompt": {
             "type": "string",
-            "description": "可选的关注点，例如\"只看右上角的按钮\"或\"找出登录表单\"。"
+            "description": "可选关注点，例如\"只看右上角的按钮\"或\"找出登录表单\"（视觉兜底启用时生效）。"
           },
           "monitor": {
             "type": "integer",
@@ -22,7 +22,7 @@
     },
     {
       "name": "localvision_ocr",
-      "description": "截取屏幕并用视觉端点逐字提取可见文字（OCR），返回纯文本。适合读取具体文字（错误消息、字段名）。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。",
+      "description": "截取屏幕并用本机原生 OCR 逐字提取可见文字（Windows 内置 / macOS tesseract），返回纯文本。免模型、轻量，适合读取具体文字（错误消息、字段名）。若本机无 OCR 且已启用视觉兜底，则回退到视觉端点 OCR。",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -33,13 +33,13 @@
     },
     {
       "name": "localvision_click",
-      "description": "在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。优先级：① text（OCR/视觉锚定，精度最高，优先；需视觉端点）> ② x,y（归一化坐标回退，无模型依赖，最轻量，始终可用）> ③ 前两者都失败则重新截图交给视觉端点看图定位（终极兜底，仅在必要时传图；需视觉端点）。默认轻量模式下仅 x,y 可用。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。",
+      "description": "在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。① text（本机 OCR 文字锚定，免模型，优先；两级截图：先局部裁剪再全屏）> ② x,y（归一化坐标直接点击，无模型依赖，最轻量，始终可用）> ③ intent（前两者都失败才启用：重新截图交给视觉端点看图定位，终极兜底；仅在 visionFallbackEnabled=true 且配置了 visionApiBaseUrl 时可用，默认关闭）。点击前建议先调用过 localvision_see / localvision_ocr 建立坐标基准。",
       "parameters": {
         "type": "object",
         "properties": {
           "text": {
             "type": "string",
-            "description": "按屏幕上出现的文字定位并点击其区域中心（Tier1，OCR/视觉锚定，精度高，优先）"
+            "description": "按屏幕上出现的文字定位并点击其区域中心（Tier1，本机 OCR 锚定，精度高，优先）"
           },
           "x": {
             "type": "number",

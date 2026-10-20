@@ -106,32 +106,9 @@ export function ocrScreen(imageB64: string, opts: VisionOpts, timeoutMs?: number
 }
 
 /**
- * Tier1：按屏幕上文字定位其归一化边界框（OCR/视觉锚定点击用）。
- * 由视觉端点完成"文字 -> 位置"的 grounding，云端只给文字，不猜坐标，精度高于归一化回退。
- * 找不到或解析失败返回 null（调用方降级），不抛错。
- */
-export async function locateText(
-  imageB64: string,
-  opts: VisionOpts,
-  query: string,
-  timeoutMs?: number
-): Promise<Box | null> {
-  const prompt = LOCATE_PROMPT.replace('{Q}', query.replace(/[\\"]/g, ' '));
-  const raw = await callVision(opts, prompt, imageB64, timeoutMs ?? opts.timeoutMs ?? 0);
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try {
-    const o = JSON.parse(m[0]);
-    if (typeof o.x === 'number' && typeof o.y === 'number') return o as Box;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Tier3 终极兜底：把截图传给视觉端点，让其按自然语言意图定位可点击位置的中心归一化坐标。
- * 与 Tier1 共用同一通用端点（本地或云端皆可），只是 prompt 形态不同。
+ * Tier3 兜底专用：按自然语言意图让视觉端点定位「可点击位置」的中心归一化坐标。
+ * 与 OCR 路径（本机原生 OCR，免模型）不同，这里只在 visionFallbackEnabled 时才会被调用，
+ * 且是标准的文本+图片请求，本地 Ollama / LM Studio / 云端皆可。
  * 找不到或解析失败返回 null（调用方降级），不抛错；超时/网络错误由调用方 try/catch。
  */
 export async function locateViaVision(

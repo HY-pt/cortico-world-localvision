@@ -2,59 +2,78 @@
  * cortico-world-localvision
  * 本地视觉 World：在「桌宠」侧提供屏幕感知与点击，把云端 token 压到最低。
  *
- * 产品定位（轻量级桌宠软件）：
- *  - 视觉端点是【可选】的：默认不配置 visionApiBaseUrl，插件进入「轻量模式」，
- *    只提供归一化坐标点击（localvision_click 的 Tier2），不调用任何视觉模型，绝不卡顿。
- *  - 当用户在设置里填上 visionApiBaseUrl（本地 Ollama 的 /v1，或云端 OpenAI 兼容端点），
- *    再解锁 localvision_see / localvision_ocr 的"看屏"能力，以及点击的 Tier1(OCR 锚定) / Tier3(看图兜底)。
+ * 【产品定位：轻量级桌宠软件】
+ *  - 默认（轻量模式）下完全不调用任何视觉大模型：
+ *      · 感知用「本机原生 OCR」（Windows 内置 / macOS tesseract），免下载、免模型、快；
+ *      · 点击用「归一化坐标」（Tier2），无模型依赖，永远可用。
+ *    => 桌宠不卡顿、不联网传图、不烧 token。
+ *  - 视觉兜底（Tier3 看图定位）是【可选开关】，默认关闭：
+ *      · 仅在 visionFallbackEnabled=true 且填了 visionApiBaseUrl 时才启用；
+ *      · 它是标准 OpenAI 兼容 /v1 端点，用户可填本地 Ollama / LM Studio 或云端，
+ *        代码不硬编码、不假设任何后端在运行。
  *
- * 彻底解耦本地模型：
- *  - 本插件不依赖、不硬编码、不假设 Ollama 在运行。视觉端点只是一个标准 OpenAI 兼容 /v1。
- *  - 用户自由选择本地或云端，填不填、填哪个完全由配置决定。
+ * 【坐标与分辨率适配】
+ *  - 云端只收「归一化坐标(0..1) + 文字」，永远不见原生像素/分辨率。
+ *  - 原生尺寸只留本机：原生像素 = 归一化 × 原生分辨率，任意分辨率/DPI/宽高比都像素级命中。
+ *  - 原生截屏做 DPI 感知（Windows PerMonitorV2），并等比缩放（不变形）。
  *
- * 三级兜底点击（localvision_click）：
- *  Tier1  text（OCR/视觉锚定，精度最高，优先；需视觉端点）
- *  Tier2  x,y（归一化坐标直接点击，无模型依赖，最轻量；始终可用）
- *  Tier3  前两者都失败 -> 重新截图交给视觉端点看图定位（终极兜底；需视觉端点）
+ * 【三级兜底点击（localvision_click）】
+ *  Tier1  text：本机 OCR 文字锚定（免模型，优先，精度高）。两级截图：先按 lastNormPoint 局部裁剪，
+ *              识别失败再降级全屏。
+ *  Tier2  x,y ：归一化坐标直接点击（无模型依赖，最轻量，始终可用）。
+ *  Tier3  intent：前两者都失败 -> 重新截图交给视觉端点看图定位（终极兜底；默认关闭，仅在必要时传图）。
  *
- * 坐标全部归一化(0..1)，由本机乘回原生像素，因此与屏幕分辨率 / DPI / 宽高比完全无关。
- *
- * 发布前请用 `pnpm describe:extension .` 与 `pnpm check:extension .` 校验。
+ * 【发布校验】pnpm describe:extension / pnpm check:extension
  */
 
 import type { WorldDefinition } from 'cortico/world.ts';
-import { describeScreen, ocrScreen, locateText, locateViaVision, type VisionOpts } from './vlm.ts';
+import {
+  describeScreen,
+  ocrScreen,
+  locateViaVision,
+  type VisionOpts,
+} from './vlm.ts';
 import { captureScreenshot } from './screenshot.ts';
 import { clickAt } from './action.ts';
 import { normToNative, type CaptureTransform } from './vision-space.ts';
+import { ocrNative, ocrToText, findWord, type OcrWord } from './ocr.ts';
 
 export interface LocalVisionSection {
-  // —— Cortico World 段必含字段 ——
-  enabled: boolean; // 由框架/部署配置控制；defaults 仅给默认
-  // —— 通用视觉端点（OpenAI 兼容 /v1）。可选；空 = 关闭视觉，进入轻量模式 ——
-  visionApiBaseUrl: string; // 本地填 http://127.0.0.1:11434/v1；云端填其 /v1。空则不调用任何视觉模型
-  visionApiKey: string; // Bearer Token；本地 Ollama / LM Studio 等留空
-  visionApiModel: string; // 模型名：本地如 minicpm-v2.6 / qwen2-vl；云端如 gpt-4o
-  visionApiTimeoutMs: number; // 单次视觉调用超时（毫秒），默认 8000；兜底失败即降级，不卡死
-  // —— 截图缩放上限（只缩不放，不变形）——
-  screenshotMaxWidth: number; // 默认 1280
-  screenshotMaxHeight: number; // 默认 800
+  enabled: boolean; // Cortico World 段开关（框架/部署控制）
+  // —— 视觉兜底（终极 Tier3，默认关闭）——
+  visionFallbackEnabled: boolean; // 显式开关：是否允许"传图给视觉端点"。默认 false。
+  visionApiBaseUrl: string; // 通用 OpenAI 兼容 /v1：本地 http://127.0.0.1:11434/v1 或云端 /v1。空=不用。
+  visionApiKey: string; // Bearer Token；本地端点留空
+  visionApiModel: string; // 模型名：本地 minicpm-v2.6 / qwen2-vl；云端 gpt-4o
+  visionApiTimeoutMs: number; // 单次视觉调用超时（毫秒），默认 8000；失败即降级，不卡死
+  // —— 通用 ——
+  ocrLang: string; // 预留：原生 OCR 语言偏好（当前实现自动选系统/英文，填了可扩展）
+  cropPadding: number; // 两级截图：局部裁剪时围绕 lastNormPoint 扩展的归一化半幅（0..0.45），默认 0.2
+  screenshotMaxWidth: number; // 发给识别引擎的图宽上限，默认 1280（等比缩放，不变形）
+  screenshotMaxHeight: number; // 高上限，默认 800
 }
 
 function textPart(text: string) {
   return { type: 'text', text };
 }
 
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
 export default {
   id: 'localvision',
   label: '本地视觉 LocalVision',
   defaults: () => ({
-    // 默认关闭视觉：不调用任何模型，桌宠最轻量、不卡顿。
-    enabled: false,
+    enabled: true,
+    // 默认：视觉兜底关闭 —— 不调用任何视觉模型，桌宠最轻量、不卡顿。
+    visionFallbackEnabled: false,
     visionApiBaseUrl: '',
     visionApiKey: '',
     visionApiModel: '',
     visionApiTimeoutMs: 8000,
+    ocrLang: '',
+    cropPadding: 0.2,
     screenshotMaxWidth: 1280,
     screenshotMaxHeight: 800,
   }),
@@ -63,13 +82,14 @@ export default {
       {
         name: 'localvision_see',
         description:
-          '截取当前屏幕，用已配置的视觉端点（本地或云端）转成稳定的文字描述（可见窗口/应用、关键文字、可疑的可点击元素及其大致位置），不向云端以外发送截图。用于"看"屏幕：屏幕没变时描述应一致，提升缓存命中、降低 token。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。',
+          '截取当前屏幕并感知内容。默认（轻量模式，未启用视觉兜底）用本机原生 OCR 提取可见文字作为"屏幕描述"返回给你——不调用任何视觉模型、不联网、不传图，最轻量。' +
+          '若启用了视觉兜底且配置了 visionApiBaseUrl，则改用视觉端点生成更丰富的描述。无论哪种，都只返回文字、不把原始截图发给云端，从而提升缓存命中、降低 token。',
         parameters: {
           type: 'object',
           properties: {
             prompt: {
               type: 'string',
-              description: '可选的关注点，例如"只看右上角的按钮"或"找出登录表单"。',
+              description: '可选关注点，例如"只看右上角的按钮"或"找出登录表单"（视觉兜底启用时生效）。',
             },
             monitor: {
               type: 'integer',
@@ -82,20 +102,24 @@ export default {
       {
         name: 'localvision_ocr',
         description:
-          '截取屏幕并用视觉端点逐字提取可见文字（OCR），返回纯文本。适合读取具体文字（错误消息、字段名）。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。',
+          '截取屏幕并用本机原生 OCR 逐字提取可见文字（Windows 内置 / macOS tesseract），返回纯文本。免模型、轻量，适合读取具体文字（错误消息、字段名）。若本机无 OCR 且已启用视觉兜底，则回退到视觉端点 OCR。',
         parameters: { type: 'object', properties: {} },
         tags: ['perception'],
       },
       {
         name: 'localvision_click',
         description:
-          '在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。优先级：① text（OCR/视觉锚定，精度最高，优先；需视觉端点）> ② x,y（归一化坐标回退，无模型依赖，最轻量，始终可用）> ③ 前两者都失败则重新截图交给视觉端点看图定位（终极兜底，仅在必要时传图；需视觉端点）。默认轻量模式下仅 x,y 可用。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。',
+          '在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。' +
+          '① text（本机 OCR 文字锚定，免模型，优先；两级截图：先局部裁剪再全屏）> ' +
+          '② x,y（归一化坐标直接点击，无模型依赖，最轻量，始终可用）> ' +
+          '③ intent（前两者都失败才启用：重新截图交给视觉端点看图定位，终极兜底；仅在 visionFallbackEnabled=true 且配置了 visionApiBaseUrl 时可用，默认关闭）。' +
+          '点击前建议先调用过 localvision_see / localvision_ocr 建立坐标基准。',
         parameters: {
           type: 'object',
           properties: {
             text: {
               type: 'string',
-              description: '按屏幕上出现的文字定位并点击其区域中心（Tier1，OCR/视觉锚定，精度高，优先）',
+              description: '按屏幕上出现的文字定位并点击其区域中心（Tier1，本机 OCR 锚定，精度高，优先）',
             },
             x: {
               type: 'number',
@@ -126,12 +150,11 @@ class LocalVisionWorld {
     return this.ctx.config as LocalVisionSection;
   }
 
-  /** 视觉端点是否已配置（启用）。未配置 -> 轻量模式。 */
+  /** 视觉兜底（Tier3）是否可用：必须显式开关 + 配置端点，二者缺一不可。默认 false。 */
   private get visionEnabled(): boolean {
-    return this.cfg.visionApiBaseUrl.trim() !== '';
+    return this.cfg.visionFallbackEnabled && this.cfg.visionApiBaseUrl.trim() !== '';
   }
 
-  /** 汇总视觉端点配置，供 vlm.ts 使用。 */
   private visionOpts(): VisionOpts {
     const c = this.cfg;
     return {
@@ -142,21 +165,24 @@ class LocalVisionWorld {
     };
   }
 
-  // 点击还原所需的基准：最近一次截图的变换（原生尺寸 + 缩放 + 时间戳）。
+  // 点击还原所需的全屏基准：最近一次全屏截图的变换。裁剪图不会覆盖它。
   private lastTransform: CaptureTransform | null = null;
+  // 最近一次成功定位/点击的「全屏归一化」坐标，用于两级截图的局部裁剪中心。
+  private lastNormPoint: { x: number; y: number } | null = null;
 
   tools() {
     return [
       {
         name: 'localvision_see',
         description:
-          '截取当前屏幕，用已配置的视觉端点（本地或云端）转成稳定的文字描述（可见窗口/应用、关键文字、可疑的可点击元素及其大致位置），不向云端以外发送截图。用于"看"屏幕：屏幕没变时描述应一致，提升缓存命中、降低 token。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。',
+          '截取当前屏幕并感知内容。默认（轻量模式，未启用视觉兜底）用本机原生 OCR 提取可见文字作为"屏幕描述"返回给你——不调用任何视觉模型、不联网、不传图，最轻量。' +
+          '若启用了视觉兜底且配置了 visionApiBaseUrl，则改用视觉端点生成更丰富的描述。无论哪种，都只返回文字、不把原始截图发给云端，从而提升缓存命中、降低 token。',
         parameters: {
           type: 'object',
           properties: {
             prompt: {
               type: 'string',
-              description: '可选的关注点，例如"只看右上角的按钮"或"找出登录表单"。',
+              description: '可选关注点，例如"只看右上角的按钮"或"找出登录表单"（视觉兜底启用时生效）。',
             },
             monitor: {
               type: 'integer',
@@ -165,22 +191,30 @@ class LocalVisionWorld {
           },
         },
         call: async (args: { prompt?: string; monitor?: number }) => {
-          if (!this.visionEnabled) {
-            return [
-              textPart(
-                '轻量模式：尚未配置视觉端点（visionApiBaseUrl 为空），localvision_see 不可用。' +
-                  '桌宠因此不调用任何视觉模型、最流畅。如需让桌宠"看"屏幕，请在设置中填写 ' +
-                  'visionApiBaseUrl（本地如 http://127.0.0.1:11434/v1，云端填其 /v1）并填好 visionApiModel；' +
-                  '当前仍可用 localvision_click 的归一化坐标(x,y)点击。'
-              ),
-            ];
-          }
           const img = await captureScreenshot({
             maxWidth: this.cfg.screenshotMaxWidth,
             maxHeight: this.cfg.screenshotMaxHeight,
             monitor: args.monitor,
           });
           this.lastTransform = img;
+          // 轻量模式：本机原生 OCR 即"看屏"描述（免模型）
+          if (!this.visionEnabled) {
+            const words = await ocrNative(img.base64);
+            if (words.length) {
+              return [
+                textPart(
+                  '【本机 OCR 屏幕描述（轻量模式，未调用任何视觉模型）】\n' + ocrToText(words)
+                ),
+              ];
+            }
+            return [
+              textPart(
+                '本机未提供可用 OCR（Windows 10/11 内置 OCR，或 macOS 需安装 tesseract），无法生成文字描述。' +
+                  '可改用 localvision_click 的归一化坐标(x,y)点击；或在设置中启用 visionFallbackEnabled 并填好 visionApiBaseUrl 用视觉端点"看"屏。'
+              ),
+            ];
+          }
+          // 视觉兜底启用：用视觉端点生成更丰富的描述
           const desc = await describeScreen(img.base64, this.visionOpts(), args.prompt);
           return [textPart(desc)];
         },
@@ -188,36 +222,44 @@ class LocalVisionWorld {
       {
         name: 'localvision_ocr',
         description:
-          '截取屏幕并用视觉端点逐字提取可见文字（OCR），返回纯文本。适合读取具体文字（错误消息、字段名）。需先配置 visionApiBaseUrl；未配置时为轻量模式，本工具不可用。',
+          '截取屏幕并用本机原生 OCR 逐字提取可见文字（Windows 内置 / macOS tesseract），返回纯文本。免模型、轻量，适合读取具体文字（错误消息、字段名）。若本机无 OCR 且已启用视觉兜底，则回退到视觉端点 OCR。',
         parameters: { type: 'object', properties: {} },
         call: async () => {
-          if (!this.visionEnabled) {
-            return [
-              textPart(
-                '轻量模式：尚未配置视觉端点（visionApiBaseUrl 为空），localvision_ocr 不可用。' +
-                  '请在设置中填写 visionApiBaseUrl / visionApiModel 以启用；当前仍可用 localvision_click 的归一化坐标(x,y)点击。'
-              ),
-            ];
-          }
           const img = await captureScreenshot({
             maxWidth: this.cfg.screenshotMaxWidth,
             maxHeight: this.cfg.screenshotMaxHeight,
           });
           this.lastTransform = img;
-          const text = await ocrScreen(img.base64, this.visionOpts());
-          return [textPart(text)];
+          const words = await ocrNative(img.base64);
+          if (words.length) {
+            return [textPart(ocrToText(words))];
+          }
+          // 本机无 OCR：若启用了视觉兜底，再回退到视觉端点 OCR
+          if (this.visionEnabled) {
+            const text = await ocrScreen(img.base64, this.visionOpts());
+            return [textPart(text)];
+          }
+          return [
+            textPart(
+              '本机未提供可用 OCR。可启用 visionFallbackEnabled 并填好 visionApiBaseUrl 以用视觉端点 OCR，或改用 localvision_click 的归一化坐标(x,y)。'
+            ),
+          ];
         },
       },
       {
         name: 'localvision_click',
         description:
-          '在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。优先级：① text（OCR/视觉锚定，精度最高，优先；需视觉端点）> ② x,y（归一化坐标回退，无模型依赖，最轻量，始终可用）> ③ 前两者都失败则重新截图交给视觉端点看图定位（终极兜底，仅在必要时传图；需视觉端点）。默认轻量模式下仅 x,y 可用。点击前需先调用过 localvision_see/localvision_ocr 建立坐标基准。',
+          '在屏幕上点击（三级兜底，坐标均归一化 0-1，由本机乘回原生像素，自适应任意分辨率/DPI/宽高比）。' +
+          '① text（本机 OCR 文字锚定，免模型，优先；两级截图：先局部裁剪再全屏）> ' +
+          '② x,y（归一化坐标直接点击，无模型依赖，最轻量，始终可用）> ' +
+          '③ intent（前两者都失败才启用：重新截图交给视觉端点看图定位，终极兜底；仅在 visionFallbackEnabled=true 且配置了 visionApiBaseUrl 时可用，默认关闭）。' +
+          '点击前建议先调用过 localvision_see / localvision_ocr 建立坐标基准。',
         parameters: {
           type: 'object',
           properties: {
             text: {
               type: 'string',
-              description: '按屏幕上出现的文字定位并点击其区域中心（Tier1，OCR/视觉锚定，精度高，优先）',
+              description: '按屏幕上出现的文字定位并点击其区域中心（Tier1，本机 OCR 锚定，精度高，优先）',
             },
             x: {
               type: 'number',
@@ -242,58 +284,39 @@ class LocalVisionWorld {
           const timeout = this.cfg.visionApiTimeoutMs;
           let note = '';
 
-          // ===== Tier1：OCR / 视觉锚定（优先，精度高；需视觉端点）=====
-          if (args.text && this.visionEnabled) {
-            try {
-              const fresh = await captureScreenshot({
-                maxWidth: this.cfg.screenshotMaxWidth,
-                maxHeight: this.cfg.screenshotMaxHeight,
-              });
-              this.lastTransform = fresh;
-              const box = await locateText(fresh.base64, opts, args.text, timeout);
-              if (box) {
-                return this.doClick(
-                  box.x + box.w / 2,
-                  box.y + box.h / 2,
-                  `text="${args.text}" (Tier1 OCR 锚定)`
-                );
-              }
-              // OCR 未找到 -> 落入 Tier2 / Tier3
-            } catch (e: any) {
-              // OCR 超时或异常 -> 落入兜底，不崩溃（不提前 return）
-              note = `Tier1 OCR 异常：${e?.message ?? e}；`;
+          // ===== Tier1：本机 OCR 文字锚定（免模型，优先；两级截图）=====
+          if (args.text) {
+            const r1 = await this.locateByOcr(args.text);
+            if (r1) {
+              return this.clickByNative(
+                r1.absX,
+                r1.absY,
+                `text="${args.text}" (Tier1 本机OCR锚定, ${r1.tier}级截图)`
+              );
             }
+            note = `Tier1 本机OCR未找到"${args.text}"；`;
           }
 
           // ===== Tier2：归一化坐标直接点击（回退；无模型依赖，最轻量，始终可用）=====
           if (typeof args.x === 'number' && typeof args.y === 'number') {
-            return this.doClick(args.x, args.y, `x,y=(${args.x},${args.y}) (Tier2 归一化回退)`);
+            return this.clickByNorm(args.x, args.y, `x,y=(${args.x},${args.y}) (Tier2 归一化回退)`);
           }
 
-          // ===== Tier3：终极兜底，截图传视觉端点看图定位（需视觉端点）=====
+          // ===== Tier3：终极兜底，截图传视觉端点看图定位（需显式启用+配置）=====
           if (intent && this.visionEnabled) {
-            try {
-              const fresh = await captureScreenshot({
-                maxWidth: this.cfg.screenshotMaxWidth,
-                maxHeight: this.cfg.screenshotMaxHeight,
-              });
-              this.lastTransform = fresh;
-              const pt = await locateViaVision(fresh.base64, opts, intent, timeout);
-              if (pt) {
-                return this.doClick(pt.x, pt.y, `intent="${intent}" (Tier3 视觉端点兜底)`);
-              }
-              return [
-                textPart(
-                  `${note}Tier3 视觉端点未能从图中定位"${intent}"。三级兜底均失败，请换用 text 或 x,y，或检查视觉端点配置。`
-                ),
-              ];
-            } catch (e: any) {
-              return [
-                textPart(
-                  `${note}Tier3 视觉端点失败：${e?.message ?? e}。请确认 visionApiBaseUrl / visionApiModel / visionApiKey 配置正确，或改用 text / x,y。`
-                ),
-              ];
+            const r3 = await this.locateByVision(intent, opts, timeout);
+            if (r3) {
+              return this.clickByNative(
+                r3.absX,
+                r3.absY,
+                `intent="${intent}" (Tier3 视觉端点兜底, ${r3.tier}级截图)`
+              );
             }
+            return [
+              textPart(
+                `${note}Tier3 视觉端点未能从图中定位"${intent}"。三级兜底均失败，请换用 text 或 x,y，或检查 visionApiBaseUrl / visionApiModel / visionApiKey。`
+              ),
+            ];
           }
 
           // ===== 落到这里：没有任何可用路径 =====
@@ -302,7 +325,7 @@ class LocalVisionWorld {
               `${note}三级兜底均不可用：` +
                 (this.visionEnabled
                   ? '请提供 text（Tier1 OCR）或 x,y（Tier2 归一化）；若想用 Tier3 看图定位，请给出文字意图（text / intent）。'
-                  : '当前为轻量模式（未配置视觉端点），请直接用 x,y 给归一化坐标(0-1)点击；如需 OCR/看图，请在设置填写 visionApiBaseUrl。')
+                  : '当前视觉兜底默认关闭，请直接用 x,y 给归一化坐标(0-1)点击；如需 OCR/看图，请在设置启用 visionFallbackEnabled 并填写 visionApiBaseUrl。')
             ),
           ];
         },
@@ -310,12 +333,120 @@ class LocalVisionWorld {
     ];
   }
 
-  // 归一化坐标 -> 原生像素 -> 真实点击，返回结果文本。
-  private async doClick(nx: number, ny: number, how: string) {
+  /**
+   * 两级截图 + 本机 OCR 定位：第一级按 lastNormPoint 局部裁剪（节约模式），
+   * 若局部识别失败，降级第二级全屏。返回屏幕绝对原生坐标（absX/absY）。
+   */
+  private async locateByOcr(
+    query: string
+  ): Promise<{ absX: number; absY: number; tier: 1 | 2 } | null> {
+    // 第一级：局部裁剪
+    const crop = await this.captureForLocate();
+    let words: OcrWord[] = await ocrNative(crop.base64);
+    let box = findWord(words, query);
+    let tier: 1 | 2 = 1;
+    if (!box) {
+      // 第二级：全屏
+      const full = await captureScreenshot({
+        maxWidth: this.cfg.screenshotMaxWidth,
+        maxHeight: this.cfg.screenshotMaxHeight,
+      });
+      this.lastTransform = full;
+      words = await ocrNative(full.base64);
+      box = findWord(words, query);
+      tier = 2;
+      if (!box) return null;
+      return this.boxToNative(full, box, tier);
+    }
+    return this.boxToNative(crop, box, tier);
+  }
+
+  /**
+   * 两级截图 + 视觉端点定位（Tier3 终极兜底）：同上两级策略，最后一步才传图。
+   */
+  private async locateByVision(
+    intent: string,
+    opts: VisionOpts,
+    timeout: number
+  ): Promise<{ absX: number; absY: number; tier: 1 | 2 } | null> {
+    const crop = await this.captureForLocate();
+    let pt = await locateViaVision(crop.base64, opts, intent, timeout);
+    let tier: 1 | 2 = 1;
+    if (!pt) {
+      const full = await captureScreenshot({
+        maxWidth: this.cfg.screenshotMaxWidth,
+        maxHeight: this.cfg.screenshotMaxHeight,
+      });
+      this.lastTransform = full;
+      pt = await locateViaVision(full.base64, opts, intent, timeout);
+      tier = 2;
+      if (!pt) return null;
+      return this.pointToNative(full, pt.x, pt.y, tier);
+    }
+    return this.pointToNative(crop, pt.x, pt.y, tier);
+  }
+
+  /** 基于 lastNormPoint 生成「局部裁剪」截屏；无基准时直接全屏。 */
+  private async captureForLocate(): Promise<CaptureTransform> {
+    const base = this.lastTransform;
+    const pad = this.cfg.cropPadding;
+    if (base && this.lastNormPoint && pad > 0) {
+      const x0 = clamp01(this.lastNormPoint.x - pad);
+      const y0 = clamp01(this.lastNormPoint.y - pad);
+      const x1 = clamp01(this.lastNormPoint.x + pad);
+      const y1 = clamp01(this.lastNormPoint.y + pad);
+      const rx = Math.round(x0 * base.nativeWidth);
+      const ry = Math.round(y0 * base.nativeHeight);
+      const rw = Math.max(1, Math.round((x1 - x0) * base.nativeWidth));
+      const rh = Math.max(1, Math.round((y1 - y0) * base.nativeHeight));
+      try {
+        return await captureScreenshot({
+          maxWidth: this.cfg.screenshotMaxWidth,
+          maxHeight: this.cfg.screenshotMaxHeight,
+          region: { x: rx, y: ry, w: rw, h: rh },
+        });
+      } catch {
+        /* 裁剪失败 -> 全屏兜底 */
+      }
+    }
+    const full = await captureScreenshot({
+      maxWidth: this.cfg.screenshotMaxWidth,
+      maxHeight: this.cfg.screenshotMaxHeight,
+    });
+    this.lastTransform = full;
+    return full;
+  }
+
+  /** OCR 文字框（归一化，相对本图）-> 屏幕绝对原生像素。 */
+  private boxToNative(
+    t: CaptureTransform,
+    box: OcrWord,
+    tier: 1 | 2
+  ): { absX: number; absY: number; tier: 1 | 2 } {
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const { x, y } = normToNative(cx, cy, t);
+    return { absX: x, absY: y, tier };
+  }
+
+  /** 视觉端点返回的中心归一化坐标 -> 屏幕绝对原生像素。 */
+  private pointToNative(
+    t: CaptureTransform,
+    nx: number,
+    ny: number,
+    tier: 1 | 2
+  ): { absX: number; absY: number; tier: 1 | 2 } {
+    const { x, y } = normToNative(nx, ny, t);
+    return { absX: x, absY: y, tier };
+  }
+
+  /** 归一化坐标(全屏) -> 原生像素 -> 真实点击（Tier2 用）。 */
+  private async clickByNorm(nx: number, ny: number, how: string) {
     if (!this.lastTransform) {
       return [textPart('坐标基准丢失，请重新 localvision_see / localvision_ocr。')];
     }
     const { x, y } = normToNative(nx, ny, this.lastTransform);
+    this.lastNormPoint = { x: clamp01(nx), y: clamp01(ny) };
     await clickAt(x, y);
     return [
       textPart(
@@ -325,18 +456,30 @@ class LocalVisionWorld {
     ];
   }
 
-  // 环境提示词：让 agent 知道何时用本地视觉、何时走轻量归一化坐标，且云端不收原始截图。
+  /** 屏幕绝对原生像素 -> 真实点击（Tier1/Tier3 用，坐标已知，无需基准）。 */
+  private async clickByNative(absX: number, absY: number, how: string) {
+    if (this.lastTransform) {
+      this.lastNormPoint = {
+        x: clamp01(absX / this.lastTransform.nativeWidth),
+        y: clamp01(absY / this.lastTransform.nativeHeight),
+      };
+    }
+    await clickAt(Math.round(absX), Math.round(absY));
+    return [textPart(`已点击 [${how}]：原生像素(${Math.round(absX)}, ${Math.round(absY)})。`)];
+  }
+
+  // 环境提示词：让 agent 知道默认用本机 OCR + 归一化坐标，视觉兜底默认关闭且可配置。
   webUi(lang: string) {
     if (lang === 'zh') {
       return [
         {
           role: 'envPrompt',
           text:
-            '你可以通过 localvision_see 工具"看"屏幕：它调用已配置的视觉端点（本地或云端）把屏幕转成稳定文字描述返回给你，' +
-            '不会把原始截图发给云端。屏幕没变时描述应当一致——据此判断是否需要重新观察。' +
-            '（轻量模式下若未配置视觉端点，localvision_see / localvision_ocr 不可用，请改用归一化坐标点击。）' +
-            '点击屏幕请用 localvision_click，内部三级兜底：① text（按屏幕上文字做 OCR/视觉锚定，精度最高，优先）；' +
-            '② x,y（直接给归一化坐标 0-1 回退，最轻量，始终可用）；③ 前两者都失败则重新截图交给视觉端点看图定位（终极兜底，仅在必要时传图）。' +
+            '你可以通过 localvision_see 工具"感知"屏幕：默认用本机原生 OCR 把屏幕转成文字描述返回给你，' +
+            '不调用任何视觉模型、不把原始截图发给云端。屏幕没变时描述应当一致——据此判断是否需要重新观察。' +
+            '（只有在设置中显式启用 visionFallbackEnabled 并填好 visionApiBaseUrl，才会改用视觉端点生成描述。）' +
+            '点击屏幕请用 localvision_click，内部三级兜底：① text（本机 OCR 按屏幕文字锚定，免模型，优先，且先局部裁剪截图、失败再全屏）；' +
+            '② x,y（直接给归一化坐标 0-1 回退，最轻量，始终可用）；③ 前两者都失败才重新截图交给视觉端点看图定位（终极兜底，默认关闭）。' +
             '所有坐标都归一化、与分辨率无关，由本机乘回原生像素执行，你无需关心屏幕实际分辨率。',
         },
       ];
@@ -345,12 +488,11 @@ class LocalVisionWorld {
       {
         role: 'envPrompt',
         text:
-          'You can "see" the screen via the localvision_see tool, which calls a configured vision endpoint (local or cloud) and returns only a ' +
-          'stable text description — raw screenshots are never sent to the cloud. ' +
-          'Base computer actions on that description; do not assume you can see raw images. ' +
-          '(In lightweight mode with no vision endpoint configured, localvision_see/localvision_ocr are unavailable — use normalized coordinates instead.) ' +
-          'To click, use localvision_click with a 3-tier fallback: ① text (OCR/visual anchor on screen text, most precise, preferred); ' +
-          '② x,y normalized coordinates (0-1) as fallback (lightest, always available); ③ if both fail, re-screenshot and ask the configured vision endpoint to locate the target (ultimate fallback, only sends an image when necessary). ' +
+          'You can "perceive" the screen via localvision_see: by default it uses on-device native OCR to return a text description — ' +
+          'no vision model is called and no raw screenshot is sent to the cloud. ' +
+          '(Only when visionFallbackEnabled is explicitly turned on AND a visionApiBaseUrl is configured does it use a vision endpoint.) ' +
+          'To click, use localvision_click with a 3-tier fallback: ① text (on-device OCR anchors on screen text, model-free, preferred; crops locally first, falls back to full screen); ' +
+          '② x,y normalized coordinates (0-1) as fallback (lightest, always available); ③ if both fail, re-screenshot and ask the configured vision endpoint to locate the target (ultimate fallback, OFF by default). ' +
           'All coordinates are normalized (0-1) and resolution-independent; the local machine maps them back to native pixels.',
       },
     ];
