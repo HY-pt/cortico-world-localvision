@@ -87,12 +87,12 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 | `visionStrategy` | `"auto"` | 感知顺序，界面只给三项：`auto` 自动（OCR>视觉模型>图片上传）/ `model-first` 模型（先视觉模型，OCR 兜底）/ `ocr-only` 只 OCR。旧值 `model-only`、`image-only` 代码仍支持 |
 | `localModelPriority` | `"auto"` | 优先选择的模型（看图）：`auto` 按本地>在线>Coopanion 兜底自动路由（端点按地址自动判本地/在线）；`local` / `online` 只用对应端点；`coop` 直接把截图交给 Coopanion 对话模型 |
 | `localModelEnabled` | `false` | 启用视觉模型（本地或线上；游戏/图片/图表等 OCR 读不出的内容） |
-| `localModelProvider` | `"custom"` | 厂商预设：`openai` / `deepseek` / `qwen` / `openrouter` / `gemini` / `anthropic` / `xai` / `kimi` / `zhipu` / `minimax` / `doubao` / `qianfan` / `stepfun` / `ollama` / `lmstudio` / `custom` |
+| `localModelProvider` | `"qwen"` | 厂商预设：`openai` / `deepseek` / `qwen` / `openrouter` / `gemini` / `anthropic` / `xai` / `kimi` / `zhipu` / `minimax` / `doubao` / `qianfan` / `stepfun` / `ollama` / `lmstudio` / `custom` |
 | `localModelProtocol` | `"auto"` | `auto` 跟随预设；或 `openai-chat` / `anthropic-messages` / `openai-responses` / `custom` |
-| `localModelPath` | `""` | 仅 `custom` 协议用，默认 `/chat/completions` |
+| `localModelPath` | `"/chat/completions"` | 仅 `custom` 协议用，默认 `/chat/completions` |
 | `localModelBaseUrl` | `""` | 留空用厂商预设地址；也可覆盖为线上/本地地址 |
 | `localModelApiKey` | `""` | 线上填厂商 Key；本地 Ollama / LM Studio 一般留空 |
-| `localModelName` | `""` | 如 `gpt-5`、`qwen-vl-max`、`claude-haiku-5-5`、`qwen2.5vl:7b` |
+| `localModelName` | `"qwen-vl-plus"` | 如 `gpt-5`、`qwen-vl-max`、`claude-haiku-5-5`、`qwen2.5vl:7b` |
 | `localModelTimeoutMs` | `20000` | 调用超时（毫秒） |
 | `localModelMaxTokens` | `1000` | 最大输出 token |
 | `localModelTemperature` | `0.2` | 温度（0–2） |
@@ -194,21 +194,17 @@ npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动
 
 ## 0.3.1（暂未发布）
 
-> 本版本已合并、尚未发布到扩展市场。发布后此节并入更新日志。
+> 本版本已合并、尚未发布到扩展市场。以下只列**与 0.3.0 的差异**；发布后此节并入更新日志。
 
-- **诊断面板新增「设备压力负载」进度条**：本地模型用户点「运行诊断」时，按当前设置实测**一次截图尝试**期间的 CPU 压力与内存占用（绿 < 60% / 黄 60–85% / 红 ≥ 85%），入门显卡跑本地视觉模型时压力会直接顶到红区；使用在线模型或 Coopanion 模型商时推理不在本机，负载直接显示 0%。
-- **诊断面板「运行环境」新增「模型」行**：一眼看清当前由谁看图——本地模型 ✓ / 在线模型 ✓ / 未启用时 Coopanion 模型商 ✓。
-- **诊断面板按钮按使用逻辑排序**：运行诊断 → 复制 → 提交 Issue（反馈三连相邻），「打核心补丁」为低频维护动作移至最后。
-- **低配机 / 性能调优指引**：README 新增折叠块，给出 7 条缓解方案（OCR-only、降分辨率、降 maxTokens、模型常驻、确认 GPU、换小模型、detail=low），按收益从大到小排序。
-- **环境提示词新增卡顿应对指引**：用户反馈「识别慢 / 卡顿」时，桌宠能建议更换更好的设备，或调低分辨率 / maxTokens / detail 等参数。
 - **`localvision_see` 新增 `expand` 一键向外延伸**：传 `region` 时带 `expand`，插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空时自动再扩一轮重试。配置页新增「默认外扩像素」（默认 100，0 = 关闭外扩与重试），不传 `expand` 时生效。
-- **诊断面板新增「提交 Issue」入口与反馈引导**：面板内一键直达仓库 issue 页（免去从扩展市场层层翻找）；并提示把上方诊断（已自动脱敏，不含画面内容与密钥）复制贴进 issue 正文。诊断文本已做敏感数据预清理（API Key 完全遮罩 + `sk-/pk-/Bearer` 令牌兜底剔除）。
+- **诊断面板新增「提交 Issue」入口与反馈引导**：面板内一键直达仓库 issue 页（免去从扩展市场层层翻找）；并提示把上方诊断（已自动脱敏，不含画面内容与密钥）复制贴进 issue 正文。诊断文本已做敏感数据预清理（API Key 完全遮罩 + `sk-/pk-/Bearer` 令牌兜底剔除）。按钮顺序也按使用逻辑重排为 运行诊断 → 复制 → 提交 Issue → 打核心补丁。
+- **诊断面板「运行环境」新增「模型」行**：一眼看清当前**实际**由谁看图——本地模型 ✓ / 在线模型 ✓ / 其余情况显示 Coopanion 模型商 ✓。判定标准是「真的会不会被调用」：在线端点没填 API Key（请求必然 401）时如实显示 Coopanion 模型商并提示去补 Key，不会谎报「在线模型 ✓」。
+- **设备压力负载进度条改为按实际使用场景测量**：0.3.0 起面板就有 CPU / 内存两条进度条；现在本地模型用户点「运行诊断」时，会按当前设置实测**一次截图尝试**期间的 CPU 压力与内存占用（绿 < 60% / 黄 60–85% / 红 ≥ 85%），入门显卡跑本地视觉模型时压力会直接顶到红区；使用在线模型或 Coopanion 模型商时推理不在本机，负载直接显示 0%。
 - **配置页按同类分组**：拆成「本地视觉 · 识别（OCR）」（感知优先级 / OCR 语言 / OCR 兜底方式 / 硬拦截截图）与「本地视觉 · 截图尺寸」（截图最大宽 / 截图最大高 / 默认外扩像素），像素类不再与 OCR 项混排。
 - **「OCR 兜底方式」更名、说明重写并默认改为图片**：原「OCR 无文字时」更名为「OCR 兜底方式」，两行说明对齐重写；默认值由 `文本` 改为 `图片`——只有 OCR 认不出字（游戏、视频等纯画面）时才把截图发给 Coopanion 已配的模型，文字场景照旧零开销，桌宠开箱即可"看懂"画面；不想发图的用户可改回 `文本`。已保存过配置的老用户不受影响（保持原值）。
-- **修复**：诊断报告生成时 `redactSecrets` 调用缺 `this.` 导致整个诊断抛 `ReferenceError`（负载进度条也因此从未渲染出来）。
-- **修复**：`localModelPriority` 默认值由 `online` 改回文档承诺的 `auto`——否则配了本机 Ollama / LM Studio（地址 127.0.0.1）但没改优先级的用户，本地模型会被静默跳过、直接回退 Coopanion 模型商。
-- **修复**：诊断「模型」行现在与真实路由一致——优先级锁定与端点地址矛盾时（如优先级=online、地址是本机）如实显示「Coopanion 模型商 ✓」并给出建议，不再谎报「本地模型 ✓」。
-- **修复**：诊断「模型」行不再把「启用了但没填 API Key 的在线模型」显示成「在线模型 ✓」。地址来自厂商预设、模型名来自默认值，在线端点没有 API Key 时请求必然 401 失败，实际会回退 Coopanion 模型商——现在统一按「真的会不会被调用」判定：在线端点缺 Key 时显示「Coopanion 模型商 ✓」并提示去「模型」页填 Key；感知链路也会跳过这次注定失败的请求，不再白跑一趟。
-- **修复**：「获取可用模型」的请求补上 12 秒超时，本地 Ollama 没起或远端挂住时不再永久卡死面板。
+- **低配机 / 性能调优指引**：README 新增折叠块，给出 7 条缓解方案（OCR-only、降分辨率、降 maxTokens、模型常驻、确认 GPU、换小模型、detail=low），按收益从大到小排序。
+- **环境提示词新增卡顿应对指引**：用户反馈「识别慢 / 卡顿」时，桌宠能建议更换更好的设备，或调低分辨率 / maxTokens / detail 等参数。
+- **修复**：`localModelPriority` 默认值由 `online` 改回文档承诺的 `auto`——0.3.0 起默认值就是 `online`，于是配了本机 Ollama / LM Studio（地址 127.0.0.1）却没改优先级的用户，本地模型会被**静默跳过**、直接回退 Coopanion 模型商。
+- **修复**：「获取可用模型」的请求补上 12 秒超时——0.3.0 就有该功能且没有超时，本地 Ollama 没起或远端挂住时面板会永久卡死。
 
 MIT。
