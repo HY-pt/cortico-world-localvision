@@ -77,6 +77,8 @@ export interface LocalVisionSection {
   localModelDetail: 'auto' | 'low' | 'high';
   /** 感知优先级：auto（OCR→模型→图片）/ ocr-only / model-first / model-only / image-only。 */
   visionStrategy: 'auto' | 'ocr-only' | 'model-first' | 'model-only' | 'image-only';
+  /** 模型未传 expand 时，region 向外扩展的默认像素；0 = 禁用外扩与兜底重试。 */
+  expandDefault: number;
   /** 优先用哪个模型看图：auto（本地>在线>Coopanion 兜底）/ local / online / coop。 */
   localModelPriority: 'auto' | 'local' | 'online' | 'coop';
 }
@@ -228,7 +230,7 @@ const TOOL_DECLS = [
     name: 'localvision_see',
     description:
       '看屏幕：在本机截屏后用本机 OCR 把可见文字转成「文字 + 截图像素坐标」返回，默认不向云端上传图片（省 token）。' +
-      '小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别；没看清时也可直接传 expand（像素值，默认 100），插件会自动把 region 向外扩大再截并兜底重试，不用你算坐标。' +
+      '小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别；没看清时也可直接传 expand（像素值），插件会自动把 region 向外扩大再截并兜底重试，不用你算坐标；不传 expand 时用配置页的默认值。' +
       '屏幕上一行文字都没有时，按配置处理：默认只回文字提示（最省 token）；也可交给视觉模型（本地端点 / 在线端点 / Coopanion 模型商）或直接上传图片（费 token）。' +
       '返回的坐标可直接传给内置的 pet_cua_click（同一显示器、默认 1280×800 缩放）。',
     parameters: {
@@ -248,7 +250,7 @@ const TOOL_DECLS = [
           type: 'integer',
           minimum: 0,
           description:
-            '只截了部分（传了 region）时，向外扩展的像素值（截图坐标空间），默认 100。插件内部自动把 region 扩大后再截并兜底重试，无需模型算精准坐标；没传 region 时无效。',
+            '只截了部分（传了 region）时，向外扩展的像素值（截图坐标空间）。插件内部自动把 region 扩大后再截并兜底重试，无需模型算精准坐标；不传时用配置页「默认外扩像素」；没传 region 时无效。',
         },
       },
       required: [],
@@ -348,6 +350,17 @@ function ocrConfigGroup(lang: string): ConfigGroup {
             : 'Image: the screenshot goes to the Coopanion model (costs tokens).\nText only: text recognition only — no games or video (default, OCR first, far fewer tokens).',
           'x-hot': true,
         },
+        [`${K}.expandDefault`]: {
+          type: 'integer',
+          title: zh ? '默认外扩像素（expand）' : 'Default expand (px)',
+          minimum: 0,
+          maximum: 1000,
+          'x-suffix': 'px',
+          'x-hot': true,
+          description: zh
+            ? '局部截图（region）没看清时，插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空还会自动再扩一轮重试。0 = 关闭外扩与重试（精确裁剪）。'
+            : 'When a region screenshot finds nothing, the plugin auto-expands the area and retries OCR — no coordinates needed from the model. 0 = disable (exact crop).',
+        },
         [`${K}.hookIntercept`]: {
           type: 'boolean',
           title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
@@ -387,6 +400,7 @@ export default {
     localModelPrompt: '',
     localModelDetail: 'auto',
     visionStrategy: 'auto',
+    expandDefault: 100,
     localModelPriority: 'online',
   }),
   describe: {
@@ -906,9 +920,11 @@ class LocalVisionWorld {
   }
 
   /** 按 `visionStrategy` 决定感知顺序：auto=OCR→模型→图片，默认 OCR 优先。 */
-  private async perceive(display: unknown, region: Region | undefined, prompt?: string, expand = 100): Promise<ToolOutcome> {
+  private async perceive(display: unknown, region: Region | undefined, prompt?: string, expand?: number): Promise<ToolOutcome> {
     const cfg = this.cfg;
-    const img = await this.capture(display, region, expand);
+    // 模型未传 expand 时用配置页的「默认外扩像素」（0 = 禁用外扩与兜底重试）。
+    const exp = Math.max(0, Math.min(1000, typeof expand === 'number' && Number.isFinite(expand) ? expand : cfg.expandDefault ?? 100));
+    const img = await this.capture(display, region, exp);
     const W = img.scaledWidth;
     const H = img.scaledHeight;
     const area = region ? `，区域 ${img.regionW}×${img.regionH} 原生像素` : '';
@@ -918,8 +934,8 @@ class LocalVisionWorld {
     const ocrWithRetry = async (): Promise<ToolOutcome | null> => {
       const first = await this.ocrOutcome(img, display);
       if (first) return first;
-      if (expand > 0 && region) {
-        const retryImg = await this.capture(display, region, expand * 2);
+      if (exp > 0 && region) {
+        const retryImg = await this.capture(display, region, exp * 2);
         const retry = await this.ocrOutcome(retryImg, display);
         if (retry) {
           return { ...retry, text: retry.text.replace('[本机 OCR]', '[本机 OCR] 没看清，已自动扩大范围重试一次') };
@@ -1011,8 +1027,9 @@ class LocalVisionWorld {
     const handlers: Record<string, (args: Record<string, unknown>) => Promise<ToolOutcome>> = {
       localvision_see: async (args) => {
         const region = parseRegion(args.region);
+        // 未传 expand 时传 undefined，由 perceive 用配置页的「默认外扩像素」兜底。
         const expand =
-          typeof args.expand === 'number' && Number.isFinite(args.expand) && args.expand >= 0 ? args.expand : 100;
+          typeof args.expand === 'number' && Number.isFinite(args.expand) && args.expand >= 0 ? args.expand : undefined;
         return this.perceive(args.display, region, typeof args.prompt === 'string' ? args.prompt : undefined, expand);
       },
       localvision_ocr: async (args) => {

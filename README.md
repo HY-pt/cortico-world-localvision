@@ -25,7 +25,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 ## 使用
 
 - **看屏**：模型自动走 `localvision_see`（文字 + 坐标，可直接传给 `pet_cua_click`）；`localvision_ocr` 只取纯文字；`localvision_doctor` 或「诊断」面板用于排错。
-- **小字 / 局部看不清**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。嫌坐标算不准？直接传 `expand`（像素值，默认 `100`）：插件自动把 `region` 向外扩大再截、**不用模型算坐标**；若 OCR 仍没字，会自动再扩一轮重试。例：`localvision_see({ region: {x,y,w,h}, expand: 200 })`。
+- **小字 / 局部看不清**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。嫌坐标算不准？直接传 `expand`（像素值）：插件自动把 `region` 向外扩大再截、**不用模型算坐标**；若 OCR 仍没字，会自动再扩一轮重试。不传 `expand` 时用配置页「默认外扩像素」（默认 100，设 0 关闭外扩与重试）。例：`localvision_see({ region: {x,y,w,h}, expand: 200 })`。
 - **World 页面签**：「模型」配/测视觉模型，「诊断」跑检测（上次结果会保留到下次检测），「配置」改截图/OCR 设置，「本地视觉·环境提示词」是框架原生页。
 - **看画面**：在「模型」页启用视觉模型并填端点（可点「获取可用模型」拉模型清单）；之后 `localvision_describe` 或 OCR 无文字时会按「优先选择的模型」（自动 / 本地 / 在线 / Coopanion）路由。
 
@@ -147,7 +147,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部）、`expand?`（搭配 `region`：向外扩展的像素，默认 `100`；自动重截并在 OCR 落空时兜底再扩一轮，无需模型算坐标） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
+| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部）、`expand?`（搭配 `region`：向外扩展的像素，不传时用配置页「默认外扩像素」；自动重截并在 OCR 落空时兜底再扩一轮，无需模型算坐标） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
 | `localvision_ocr` | `display?`、`region?` | 纯文本（不含坐标、不回退图片） |
 | `localvision_describe` | `prompt?`、`display?`、`region?` | 用视觉模型描述画面；按「优先选择的模型」路由到本地端点 / 在线端点 / Coopanion 模型商 |
 | `localvision_doctor` | `checkModel?` | 诊断报告：屏幕/DPI、OCR 语言与缓存、硬拦截、视觉模型端点；`checkModel:true` 会实测端点 |
@@ -199,7 +199,7 @@ npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动
 - **诊断面板新增「设备压力负载」进度条**：一眼看清当前 CPU / 内存占用（绿 < 60% / 黄 60–85% / 红 ≥ 85%）；入门显卡（如 GTX 1650 / 4GB）跑本地视觉模型时压力会直接顶到红区。
 - **低配机 / 性能调优指引**：README 新增折叠块，给出 7 条缓解方案（OCR-only、降分辨率、降 maxTokens、模型常驻、确认 GPU、换小模型、detail=low），按收益从大到小排序。
 - **环境提示词新增卡顿应对指引**：用户反馈「识别慢 / 卡顿」时，桌宠能建议更换更好的设备，或调低分辨率 / maxTokens / detail 等参数。
-- **`localvision_see` 新增 `expand` 一键向外延伸**：传 `region` 时带 `expand`（默认 100），插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空时自动再扩一轮重试。
+- **`localvision_see` 新增 `expand` 一键向外延伸**：传 `region` 时带 `expand`，插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空时自动再扩一轮重试。配置页新增「默认外扩像素」（默认 100，0 = 关闭外扩与重试），不传 `expand` 时生效。
 - **诊断面板新增「提交 Issue」入口与反馈引导**：面板内一键直达仓库 issue 页（免去从扩展市场层层翻找）；并提示把上方诊断（已自动脱敏，不含画面内容与密钥）复制贴进 issue 正文。诊断文本已做敏感数据预清理（API Key 完全遮罩 + `sk-/pk-/Bearer` 令牌兜底剔除）。
 
 MIT。
