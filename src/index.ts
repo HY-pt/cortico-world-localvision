@@ -891,7 +891,7 @@ class LocalVisionWorld {
     if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
     if (route.blockedBy === 'missing-endpoint') tips.push('视觉模型已启用但缺地址/模型名：请到「模型」页补全');
     if (route.blockedBy === 'missing-key')
-      tips.push('视觉模型已启用，但在线端点没填 API Key：请求会 401 失败，实际用不上（到「模型」页填 Key，或改用本地模型）');
+      tips.push('视觉模型已启用，但在线端点没填 API Key：看图请求会降级交给 Coopanion 模型商（费 token）；请到「模型」页填 Key，或改用本地模型');
     if (route.blockedBy === 'priority')
       tips.push(
         `「优先选择的模型」锁定与端点地址不一致（优先级=${cfg.localModelPriority}，地址=${localEndpoint ? '本机' : '在线'}）：` +
@@ -1149,16 +1149,40 @@ class LocalVisionWorld {
         if (!resolveEndpoint(cfg).base || !cfg.localModelName.trim()) {
           return { text: '[localvision_describe] 视觉模型还缺「地址」或「模型名」。', failed: true };
         }
-        if (route.blockedBy === 'missing-key') {
-          // 在线端点没 Key 就发请求必然 401，白跑一次；直接告诉用户去补 Key。
-          return {
-            text: '[localvision_describe] 在线端点需要 API Key：请到「模型」页填 API Key（本地模型可留空）。',
-            failed: true,
-          };
-        }
         const region = parseRegion(args.region);
         const img = await this.capture(args.display, region);
-        return this.describeWithLocalModel(img, typeof args.prompt === 'string' ? args.prompt : undefined);
+        // 视觉模型用不上（缺 Key）或调用失败（401/超时/网络）时不硬报错，
+        // 降级到「Coopanion 模型商」档：把截图作为图片交给当前对话模型；两档都不行才报错。
+        const coopDescribeFallback = (reason: string): ToolOutcome => {
+          if (!this.acceptsImage) {
+            return {
+              text: `[localvision_describe] ${reason}，且当前对话模型不接收图片，无法兜底看图。`,
+              failed: true,
+            };
+          }
+          return {
+            text: `[localvision_describe] ${reason}，已把截图交给当前对话模型描述（见下方图片）。`,
+            blobs: [
+              {
+                bytes: Buffer.from(img.base64, 'base64'),
+                mime: 'image/png',
+                name: region ? 'crop.png' : 'screen.png',
+                fallbackText: region ? `区域截图 ${img.scaledWidth}×${img.scaledHeight}` : `屏幕截图 ${img.scaledWidth}×${img.scaledHeight}`,
+              },
+            ],
+          };
+        };
+        if (route.blockedBy === 'missing-key') {
+          // 在线端点没 Key 发请求必然 401，白跑一次；直接降级交给对话模型，不发注定失败的请求。
+          return coopDescribeFallback('在线端点缺 API Key，视觉模型用不上（请到「模型」页补填）');
+        }
+        const r = await this.describeWithLocalModel(img, typeof args.prompt === 'string' ? args.prompt : undefined);
+        if (r.failed) {
+          this.host?.log.warn('localvision: describe 视觉模型失败，降级交给对话模型', { detail: r.text });
+          const detail = String(r.text).replace(/^\[localvision_describe\]\s*/, '').replace(/\s+/g, ' ').slice(0, 140);
+          return coopDescribeFallback(`视觉模型调用失败（${detail}）`);
+        }
+        return r;
       },
       localvision_doctor: async (args) => this.doctor(args.checkModel === true),
     };
