@@ -382,8 +382,12 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
             type: 'boolean',
             title: zh ? '发图时附带本机 OCR 文字' : 'Attach local OCR text to images',
             description: zh
-              ? '需要真的发图时（视觉模型看图、或图片兜底交给 Coopanion 模型商），除了原始截图，再附一份本机 OCR 得到的文字与坐标，让模型不用靠读图认字、直接按坐标定位。\n截图始终是原图，不做任何涂改或抠字。会多消耗少量 token；画面 0 文字时不附加任何内容。'
-              : 'When an image really has to be sent (vision model or Coopanion fallback), also attach locally OCR’d text with coordinates, so the model locates by coordinates instead of reading glyphs. The screenshot is always untouched pixels. Costs a few extra tokens; nothing is attached when the frame has no text.',
+              ? '⚠️ 默认关闭：开启后每次发图都会额外多消耗 token，只在必要时打开。\n' +
+                '作用：需要真的发图时（视觉模型看图、或图片兜底交给 Coopanion 模型商），除原始截图外再附一份本机 OCR 的文字与坐标，让模型直接按坐标定位、不必靠读图认字。\n' +
+                '什么时候该开：本地小模型（7B 级别）看图认中文小字容易认错、幻觉严重时。在线大模型（GPT / 豆包 / Qwen-VL 大尺寸）自己读图就够准，开着纯属浪费。截图始终原图，不做任何涂改；画面 0 文字时不附加任何内容。'
+              : '⚠️ Off by default: enabling costs extra tokens on every image sent.\n' +
+                'When an image really has to be sent (vision model or Coopanion fallback), also attach locally OCR’d text with coordinates so the model locates by coordinates instead of reading glyphs.\n' +
+                'Enable only when a small local model misreads tiny text and hallucinates; large online VLMs read images well enough. The screenshot is always untouched pixels; nothing is attached when the frame has no text.',
             'x-hot': true,
           },
           [`${K}.hookIntercept`]: {
@@ -454,7 +458,8 @@ function defaultLocalVisionSection(): LocalVisionSection {
     expandDefault: 100,
     // 默认 auto：本机/在线按地址自动路由，本地 Ollama 等不会因优先级被静默跳过。
     localModelPriority: 'auto',
-    textAssist: true,
+    // 默认关：文本辅助要多花 token，只有本地小模型认字不准、幻觉严重时才有必要开。
+    textAssist: false,
   };
 }
 
@@ -811,7 +816,8 @@ class LocalVisionWorld {
    * 负责图标与排版，文字一律以本机 OCR 为准，模型按坐标定位。
    */
   private async assistText(img: CaptureResult, display: unknown): Promise<string> {
-    if (this.cfg.textAssist === false) return '';
+    // 用真值判断而非 === false：老配置里没有这个字段（undefined）时应按默认关闭处理。
+    if (!this.cfg.textAssist) return '';
     try {
       const words = await this.wordsOf(img);
       if (!words.length) return '';
@@ -954,6 +960,8 @@ class LocalVisionWorld {
       );
     if (cfg.onOcrEmpty === 'image' && !route.configured)
       tips.push('「OCR 兜底方式」为 图片 但视觉模型未配置：OCR 认不出字时截图会发给 Coopanion 已配的模型（费 token）；不需要请在「配置」页改为 文本');
+    if (cfg.textAssist)
+      tips.push('「发图时附带本机 OCR 文字」已开启：每次发图都会多消耗 token，只有本地小模型认字不准时才需要；用在线大模型可以在「配置」页关掉');
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
     if (tips.length) lines.push(`建议: ${tips.join('；')}`);
 
