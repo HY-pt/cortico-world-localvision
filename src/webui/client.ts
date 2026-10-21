@@ -371,8 +371,8 @@ const diagnostics: WebUiPanel = {
       'div',
       'lv-issue-guide',
       t(
-        '遇到问题？点「提交 Issue ↗」去仓库反馈，再把上方诊断用「复制」按钮复制（已自动脱敏，不含画面内容与密钥）贴进正文即可，无需绕去扩展市场层层翻找。',
-        'Hit an issue? Tap "File an issue ↗" to open the repo, then copy the diagnostics above via the Copy button (auto-redacted — no screen content or keys) and paste into the issue body. No need to dig through the extension market.',
+        '遇到问题点「提交 Issue ↗」，把上方诊断「复制」贴进正文即可（已脱敏）。',
+        'Hit an issue? Tap "File an issue ↗" and paste the copied diagnostics (auto-redacted) into the issue body.',
       ),
     );
     card.body.append(bar, guide, body);
