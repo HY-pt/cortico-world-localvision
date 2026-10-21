@@ -597,7 +597,7 @@ class LocalVisionWorld {
         continue;
       }
 
-      const key = createHash('sha256').update(bytes).digest('hex');
+      const key = this.ocrCacheKey(bytes, this.cfg.ocrLang, dims.w, dims.h);
       let words = this.ocrCache.get(key);
       if (!words) {
         words = await this.runOcr(Buffer.from(bytes).toString('base64'), {
@@ -836,12 +836,19 @@ class LocalVisionWorld {
     }
   }
 
+  /** OCR 缓存的 key：除了图片本身，**语言和尺寸也要进 key**——只按字节算的话，改了 ocrLang 会继续命中旧语言的识别结果。 */
+  private ocrCacheKey(bytes: Uint8Array, lang: string, width: number, height: number): string {
+    const resolved = resolveOcrLangs(lang);
+    return createHash('sha256').update(`${resolved}|${width}x${height}|`).update(bytes).digest('hex');
+  }
+
   /**
-   * 取某张截图的 OCR 结果：按图片字节做 key，命中缓存就不再跑（一张图可能被
-   * 硬拦截、文本辅助、expand 重试各问一次，缓存让整帧只识别一次）。
+   * 取某张截图的 OCR 结果：按「语言 + 尺寸 + 图片字节」做 key，命中缓存就不再跑
+   * （一张图可能被硬拦截、文本辅助、expand 重试各问一次，缓存让整帧只识别一次）。
    */
   private async wordsOf(img: { base64: string; scaledWidth: number; scaledHeight: number }): Promise<OcrWord[]> {
-    const key = createHash('sha256').update(Buffer.from(img.base64, 'base64')).digest('hex');
+    const bytes = Buffer.from(img.base64, 'base64');
+    const key = this.ocrCacheKey(bytes, this.cfg.ocrLang, img.scaledWidth, img.scaledHeight);
     const cached = this.ocrCache.get(key);
     if (cached) return cached;
     const words = await this.runOcr(img.base64, this.ocrOptions(img));
@@ -1091,9 +1098,16 @@ class LocalVisionWorld {
 
     const modelNow = async (): Promise<ToolOutcome | null> => {
       if (cfg.localModelPriority === 'coop' || !visionUsable()) return null;
+      // 与 describe 保持一致：视觉模型看到的也是原图，开关打开时同样附带 OCR 文本（命中缓存时几乎不花钱）。
+      const assist = await this.assistText(img, display);
       const r = await this.describeWithLocalModel(
         img,
-        prompt || '这张截图里有什么？重点说明画面内容、控件、可见文字与布局。',
+        [
+          prompt || '这张截图里有什么？重点说明画面内容、控件、可见文字与布局。',
+          assist,
+        ]
+          .filter(Boolean)
+          .join('\n'),
       );
       if (r.failed) {
         this.host?.log.warn('localvision: 视觉模型失败', { detail: r.text });
@@ -1170,7 +1184,8 @@ class LocalVisionWorld {
       localvision_ocr: async (args) => {
         const region = parseRegion(args.region);
         const img = await this.capture(args.display, region);
-        const words = await this.runOcr(img.base64, this.ocrOptions(img));
+        // 走 wordsOf：同一张图刚被 see / 硬拦截识别过就直接复用，省一次 9 秒级的 OCR。
+        const words = await this.wordsOf(img);
         if (!words.length) {
           return {
             text:
@@ -1202,12 +1217,6 @@ class LocalVisionWorld {
                 fallbackText: region ? `区域截图 ${img.scaledWidth}×${img.scaledHeight}` : `屏幕截图 ${img.scaledWidth}×${img.scaledHeight}`,
               },
             ],
-          };
-        }
-        if (cfg.localModelPriority !== 'auto' && cfg.localModelPriority !== kind) {
-          return {
-            text: `[localvision_describe] 「优先选择的模型」设为 ${cfg.localModelPriority}，但端点地址是${kind === 'local' ? '本地' : '在线'}的；请在「模型」页改地址或调整优先级。`,
-            failed: true,
           };
         }
         if (!cfg.localModelEnabled) {
@@ -1242,6 +1251,13 @@ class LocalVisionWorld {
         if (route.blockedBy === 'missing-key') {
           // 在线端点没 Key 发请求必然 401，白跑一次；直接降级交给对话模型，不发注定失败的请求。
           return coopDescribeFallback('在线端点缺 API Key，视觉模型用不上（请到「模型」页补填）');
+        }
+        if (route.blockedBy === 'priority') {
+          // 和缺 Key 同一类：本地/在线模型因优先级锁定不会被调用，诊断显示「Coopanion 模型商 ✓」、
+          // perceive 也会降级——describe 这里必须同样降级，否则又变成「报 A 实际 B」的硬报错。
+          return coopDescribeFallback(
+            `「优先选择的模型」设为 ${cfg.localModelPriority}，但端点地址是${kind === 'local' ? '本地' : '在线'}的，该模型不会被调用`,
+          );
         }
         // 视觉模型看图也走原图：额外附带本机 OCR 文本，让模型不必靠读图认字（同一帧只 OCR 一次）。
         const userPrompt = typeof args.prompt === 'string' ? args.prompt : '';
