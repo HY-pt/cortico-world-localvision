@@ -411,7 +411,8 @@ export default {
     localModelDetail: 'auto',
     visionStrategy: 'auto',
     expandDefault: 100,
-    localModelPriority: 'online',
+    // 默认 auto：本机/在线按地址自动路由，本地 Ollama 等不会因优先级被静默跳过。
+    localModelPriority: 'auto',
   }),
   describe: {
     tools: TOOL_DECLS,
@@ -790,8 +791,8 @@ class LocalVisionWorld {
     const modelConfigured = cfg.localModelEnabled && !!endpoint.base && !!cfg.localModelName.trim();
     // 端点是否本机地址（本地模型才谈得上「本机硬件压力」）。
     const localEndpoint = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(endpoint.base);
-    // 本地模型是否真正参与本机推理：启用 + 配置齐全 + 端点为本机 + 优先级未显式指到 Coopanion。
-    const localActive = cfg.localModelEnabled && modelConfigured && localEndpoint && cfg.localModelPriority !== 'coop';
+    // 本地模型是否真正参与本机推理：启用 + 配置齐全 + 端点本机 + 优先级允许本地（auto / local）。
+    const localActive = cfg.localModelEnabled && modelConfigured && localEndpoint && (cfg.localModelPriority === 'auto' || cfg.localModelPriority === 'local');
     const cpuCores = cpus().length;
     // 设备压力负载：本地模型用户按「当前设置的一次截图尝试」实测硬件压力；
     // 在线 / Coopanion 模型商推理不在本机，直接 0%。
@@ -844,19 +845,32 @@ class LocalVisionWorld {
       `模型 ${cfg.localModelName || '(空)'}; Key ${maskedKey}; maxTokens ${cfg.localModelMaxTokens}, temp ${cfg.localModelTemperature}, detail ${cfg.localModelDetail}`,
     );
 
-    // 运行环境的「模型」行：当前实际由谁看图（本地 / 在线 / 未启用时 Coopanion 模型商）。
+    // 运行环境的「模型」行：当前实际由谁看图（与 perceive 里 visionUsable 的路由决策保持一致）。
+    // 优先级锁定与端点地址矛盾时（如 priority=online 但地址是本机），本地/在线端点根本不会被调用，
+    // 实际回退到 Coopanion 模型商——badge 要如实反映，避免误导排查。
+    const priorityMismatch =
+      cfg.localModelEnabled &&
+      modelConfigured &&
+      cfg.localModelPriority !== 'coop' &&
+      ((cfg.localModelPriority === 'local' && !localEndpoint) ||
+        (cfg.localModelPriority === 'online' && localEndpoint));
     const modelBadge =
-      cfg.localModelEnabled && modelConfigured && cfg.localModelPriority !== 'coop'
-        ? localEndpoint
+      !cfg.localModelEnabled || !modelConfigured || cfg.localModelPriority === 'coop' || priorityMismatch
+        ? 'Coopanion 模型商 ✓'
+        : localEndpoint
           ? '本地模型 ✓'
-          : '在线模型 ✓'
-        : 'Coopanion 模型商 ✓';
+          : '在线模型 ✓';
     lines.push(`模型: ${modelBadge}`);
 
     const tips: string[] = [];
     if (!cachedLangs.includes(resolved)) tips.push(`语言包 ${resolved} 还没缓存，首次 OCR 会下载`);
     if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
     if (cfg.localModelEnabled && !modelConfigured) tips.push('视觉模型已启用但缺地址/模型名');
+    if (priorityMismatch)
+      tips.push(
+        `「优先选择的模型」锁定与端点地址不一致（优先级=${cfg.localModelPriority}，地址=${localEndpoint ? '本机' : '在线'}）：` +
+          '本地/在线模型不会被调用，实际走 Coopanion 模型商；需要请到「模型」页调整地址或优先级',
+      );
     if (cfg.onOcrEmpty === 'image' && !(cfg.localModelEnabled && cfg.localModelBaseUrl.trim() && cfg.localModelName.trim()))
       tips.push('「OCR 兜底方式」为 图片 但视觉模型未配置：OCR 认不出字时截图会发给 Coopanion 已配的模型（费 token）；不需要请在「配置」页改为 文本');
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
@@ -1254,11 +1268,14 @@ class LocalVisionWorld {
     // OpenAI 兼容：base 常以 /v1 结尾（如 DeepSeek、Ollama 的 OpenAI 模式），模型清单在 /v1/models；
     // 没带 /v1 时再补一个 /v1/models 兜底。
     const paths = /\/v1\/?$/i.test(clean) ? ['/models'] : ['/v1/models', '/models'];
+    // 列表请求加超时：本地 Ollama 没起 / 远端挂住时不会把面板「获取可用模型」卡死。
+    const ac = new AbortController();
+    const listTimeout = setTimeout(() => ac.abort(), 12000);
     try {
       if (isOllama) {
         // Ollama 原生清单在 /api/tags；base 若以 /v1 结尾（OpenAI 模式）要去掉，否则变成 /v1/api/tags。
         const ollamaBase = clean.replace(/\/v1\/?$/i, '');
-        const r = await fetch(`${ollamaBase}/api/tags`);
+        const r = await fetch(`${ollamaBase}/api/tags`, { signal: ac.signal });
         if (!r.ok) return { ok: false, models: [], detail: `HTTP ${r.status}` };
         const j = (await r.json()) as { models?: Array<{ name: string }> };
         const models = (j.models ?? []).map((m) => m.name).filter(Boolean).sort();
@@ -1266,7 +1283,7 @@ class LocalVisionWorld {
       }
       for (const p of paths) {
         try {
-          const r = await fetch(`${clean}${p}`, { headers });
+          const r = await fetch(`${clean}${p}`, { headers, signal: ac.signal });
           if (!r.ok) {
             if (p === paths[paths.length - 1]) return { ok: false, models: [], detail: `HTTP ${r.status}（已试 ${paths.join('、')}）` };
             continue;
@@ -1281,6 +1298,8 @@ class LocalVisionWorld {
       return { ok: false, models: [], detail: '未知错误' };
     } catch (e) {
       return { ok: false, models: [], detail: (e as Error).message };
+    } finally {
+      clearTimeout(listTimeout);
     }
   }
 
