@@ -55,8 +55,13 @@ export interface LocalVisionSection {
   hookIntercept: boolean;
   /** 额外强制拦截的工具名；带 screen/zoom/截图 特征的 blob 无论工具名都会被拦。 */
   hookTools: string[];
-  /** OCR 找不到文字时（硬拦截与 see 工具共用）：'image' 把截图作为图片发给 Coopanion 对话模型，'text' 丢弃图片只留提示。 */
+  /** OCR 找不到文字时（硬拦截与 see 工具共用）：'image' 把截图发给 Coopanion 对话模型，'text' 丢弃图片只留提示。 */
   onOcrEmpty: 'image' | 'text';
+  /**
+   * 图片兜底时附带本机 OCR 的「文字 + 坐标」纯文本（text assist）。
+   * 截图按原图发送，一个像素都不改；多带一段文本让模型不用靠读图认字。
+   */
+  textAssist: boolean;
   /** 视觉模型端点（本地或线上，OpenAI 兼容 / Anthropic / Responses / 自定义路径）；默认关闭。 */
   localModelEnabled: boolean;
   /** 厂商预设：openai/anthropic/gemini/deepseek/qwen/openrouter/xai/kimi/zhipu/minimax/doubao/qianfan/stepfun/ollama/lmstudio/custom。 */
@@ -373,6 +378,14 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
               : 'Image (default): when OCR finds no text, the screenshot is sent to the Coopanion model as a fallback — it can read games, video, etc. (costs tokens).\nText: returns recognized text only; no image is sent and no extra cost.',
             'x-hot': true,
           },
+          [`${K}.textAssist`]: {
+            type: 'boolean',
+            title: zh ? '发图时附带本机 OCR 文字' : 'Attach local OCR text to images',
+            description: zh
+              ? '需要真的发图时（视觉模型看图、或图片兜底交给 Coopanion 模型商），除了原始截图，再附一份本机 OCR 得到的文字与坐标，让模型不用靠读图认字、直接按坐标定位。\n截图始终是原图，不做任何涂改或抠字。会多消耗少量 token；画面 0 文字时不附加任何内容。'
+              : 'When an image really has to be sent (vision model or Coopanion fallback), also attach locally OCR’d text with coordinates, so the model locates by coordinates instead of reading glyphs. The screenshot is always untouched pixels. Costs a few extra tokens; nothing is attached when the frame has no text.',
+            'x-hot': true,
+          },
           [`${K}.hookIntercept`]: {
             type: 'boolean',
             title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
@@ -441,6 +454,7 @@ function defaultLocalVisionSection(): LocalVisionSection {
     expandDefault: 100,
     // 默认 auto：本机/在线按地址自动路由，本地 Ollama 等不会因优先级被静默跳过。
     localModelPriority: 'auto',
+    textAssist: true,
   };
 }
 
@@ -789,6 +803,47 @@ class LocalVisionWorld {
     }
   }
 
+  /**
+   * 「文本辅助」：截图要发给模型时，在图片之外**额外**附一份本机 OCR 的文字与坐标。
+   *
+   * 定调：**原图一个像素都不改**。不做涂抹、不抠字——把文字涂成色块会让模型把那里
+   * 误判成空白按钮/输入框，反而破坏 UI 布局语义、制造更严重的幻觉。正确做法是：图片
+   * 负责图标与排版，文字一律以本机 OCR 为准，模型按坐标定位。
+   */
+  private async assistText(img: CaptureResult, display: unknown): Promise<string> {
+    if (this.cfg.textAssist === false) return '';
+    try {
+      const words = await this.wordsOf(img);
+      if (!words.length) return '';
+      const f = this.fullScaleOf(img.nativeWidth, img.nativeHeight);
+      const map = (nx: number, ny: number) => ({
+        x: (img.regionX + nx * img.regionW) * f,
+        y: (img.regionY + ny * img.regionH) * f,
+      });
+      return (
+        `\n\n[本机 OCR 文本辅助] 截图按原样附上，另给本机识别出的文字与坐标——` +
+        `认字请以这段文本为准，图片只看图标、控件与排版：\n` +
+        `${ocrToLocatedTextMapped(words, map)}\n${this.hint(display, img)}`
+      );
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 取某张截图的 OCR 结果：按图片字节做 key，命中缓存就不再跑（一张图可能被
+   * 硬拦截、文本辅助、expand 重试各问一次，缓存让整帧只识别一次）。
+   */
+  private async wordsOf(img: { base64: string; scaledWidth: number; scaledHeight: number }): Promise<OcrWord[]> {
+    const key = createHash('sha256').update(Buffer.from(img.base64, 'base64')).digest('hex');
+    const cached = this.ocrCache.get(key);
+    if (cached) return cached;
+    const words = await this.runOcr(img.base64, this.ocrOptions(img));
+    if (this.ocrCache.size > 200) this.ocrCache.clear();
+    this.ocrCache.set(key, words);
+    return words;
+  }
+
   /** OCR 调用统一入口：记录次数、耗时、词数，供诊断用。 */
   private async runOcr(base64: string, opts: OcrOptions): Promise<OcrWord[]> {
     const t0 = Date.now();
@@ -977,7 +1032,7 @@ class LocalVisionWorld {
   /** 对单张截图做本机 OCR，返回「文字 + 坐标」结果；无文字或失败时返回 null。 */
   private async ocrOutcome(img: CaptureResult, display: unknown): Promise<ToolOutcome | null> {
     try {
-      const words = await this.runOcr(img.base64, this.ocrOptions(img));
+      const words = await this.wordsOf(img);
       if (!words.length) return null;
       const f = this.fullScaleOf(img.nativeWidth, img.nativeHeight);
       const map = (nx: number, ny: number) => ({
@@ -1039,8 +1094,9 @@ class LocalVisionWorld {
       return r;
     };
 
-    const imageNow = (): ToolOutcome => ({
-      text: `${base}\n[本机 OCR] 未识别到文字，已回退为截图图片。`,
+    // 图片兜底：截图原样发走（不涂改），并附上本机 OCR 的文字与坐标。
+    const imageNow = async (): Promise<ToolOutcome> => ({
+      text: `${base}\n[本机 OCR] 未识别到文字，已回退为截图图片。${await this.assistText(img, display)}`,
       blobs: [
         {
           bytes: Buffer.from(img.base64, 'base64'),
@@ -1060,9 +1116,9 @@ class LocalVisionWorld {
         `\n可以用 pet_cua_windows 列窗口，或直接按已知坐标操作。`,
     });
 
-    // 链尾兜底 = Coopanion 模型商：把截图作为图片交给对话模型。
+    // 链尾兜底 = Coopanion 模型商：把截图原样交给对话模型（图片 + 本机 OCR 文本）。
     // 「OCR 兜底方式」设为 图片、或显式把优先级设为 coop，才真正发图。
-    const coopFallback = (): ToolOutcome =>
+    const coopFallback = async (): Promise<ToolOutcome> =>
       (cfg.onOcrEmpty === 'image' || cfg.localModelPriority === 'coop') && this.acceptsImage ? imageNow() : noteNow();
 
     switch (cfg.visionStrategy) {
@@ -1126,7 +1182,10 @@ class LocalVisionWorld {
           const region = parseRegion(args.region);
           const img = await this.capture(args.display, region);
           return {
-            text: '[localvision_describe] 已按「优先选择的模型=coop」把截图交给当前对话模型描述（见下方图片）。',
+            // 原图 + 本机 OCR 文本：模型按坐标定位，不用自己认字。
+            text:
+              '[localvision_describe] 已按「优先选择的模型=coop」把截图交给当前对话模型描述（见下方图片，原图未做任何涂改）。' +
+              (await this.assistText(img, args.display)),
             blobs: [
               {
                 bytes: Buffer.from(img.base64, 'base64'),
@@ -1153,7 +1212,7 @@ class LocalVisionWorld {
         const img = await this.capture(args.display, region);
         // 视觉模型用不上（缺 Key）或调用失败（401/超时/网络）时不硬报错，
         // 降级到「Coopanion 模型商」档：把截图作为图片交给当前对话模型；两档都不行才报错。
-        const coopDescribeFallback = (reason: string): ToolOutcome => {
+        const coopDescribeFallback = async (reason: string): Promise<ToolOutcome> => {
           if (!this.acceptsImage) {
             return {
               text: `[localvision_describe] ${reason}，且当前对话模型不接收图片，无法兜底看图。`,
@@ -1161,7 +1220,7 @@ class LocalVisionWorld {
             };
           }
           return {
-            text: `[localvision_describe] ${reason}，已把截图交给当前对话模型描述（见下方图片）。`,
+            text: `[localvision_describe] ${reason}，已把截图交给当前对话模型描述（原图未做任何涂改）。${await this.assistText(img, args.display)}`,
             blobs: [
               {
                 bytes: Buffer.from(img.base64, 'base64'),
@@ -1176,7 +1235,10 @@ class LocalVisionWorld {
           // 在线端点没 Key 发请求必然 401，白跑一次；直接降级交给对话模型，不发注定失败的请求。
           return coopDescribeFallback('在线端点缺 API Key，视觉模型用不上（请到「模型」页补填）');
         }
-        const r = await this.describeWithLocalModel(img, typeof args.prompt === 'string' ? args.prompt : undefined);
+        // 视觉模型看图也走原图：额外附带本机 OCR 文本，让模型不必靠读图认字（同一帧只 OCR 一次）。
+        const userPrompt = typeof args.prompt === 'string' ? args.prompt : '';
+        const assist = await this.assistText(img, args.display);
+        const r = await this.describeWithLocalModel(img, [userPrompt, assist].filter(Boolean).join('\n') || undefined);
         if (r.failed) {
           this.host?.log.warn('localvision: describe 视觉模型失败，降级交给对话模型', { detail: r.text });
           const detail = String(r.text).replace(/^\[localvision_describe\]\s*/, '').replace(/\s+/g, ' ').slice(0, 140);
