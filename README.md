@@ -10,19 +10,22 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 ## 安装
 
-1. 拿到代码，记住**绝对路径**：`git clone https://github.com/HY-pt/cortico-world-localvision.git`
-2. **在源码目录跑 `npm install`**（装 OCR 依赖 tesseract.js；手动安装只做链接、不会自动装依赖，少了这步一运行就报模块缺失）。
-3. 扩展页 → **手动安装** → 填这个绝对路径 → **重启 Coopanion**（显示「待重启」就是还没载入）。
-4. 打开 **World 总览**，启用「本地视觉 LocalVision」（新 World 默认待命）。
-5. **习惯 → 电脑操作**：确认「使用电脑」「允许操作鼠标和键盘」已打开（内置 cua 的开关）。
-6. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`。
+推荐从 **Coopanion 扩展市场**一键安装：
+
+1. 打开 Coopanion（项目主页 / 下载：<https://github.com/Pal-AI-Lab/Coopanion>），进入 **扩展市场**。
+2. 搜索「本地视觉 LocalVision」，点击 **安装**。
+3. 打开 **World 总览**，启用「本地视觉 LocalVision」（新 World 默认待命）。
+4. **习惯 → 电脑操作**：确认「使用电脑」「允许操作鼠标和键盘」已打开（内置 cua 的开关）。
+5. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`。
 
 装好后，对话里说「看一眼屏幕」，模型应当返回文字 + 坐标，而不是 `pet_cua_screenshot` 传图。
+
+> 想从源码装（开发者 / 改代码）：见文末「开发与校验」。
 
 ## 使用
 
 - **看屏**：模型自动走 `localvision_see`（文字 + 坐标，可直接传给 `pet_cua_click`）；`localvision_ocr` 只取纯文字；`localvision_doctor` 或「诊断」面板用于排错。
-- **小字**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。看不清时也**直接传 `expand`（像素值，默认 100）**即可：插件自动把 `region` 向外扩大再截、**不用模型算坐标**；OCR 仍没字会自动再扩一轮重试。例：`localvision_see({ region: {x,y,w,h}, expand: 200 })`。
+- **小字 / 局部看不清**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。嫌坐标算不准？直接传 `expand`（像素值，默认 `100`）：插件自动把 `region` 向外扩大再截、**不用模型算坐标**；若 OCR 仍没字，会自动再扩一轮重试。例：`localvision_see({ region: {x,y,w,h}, expand: 200 })`。
 - **World 页面签**：「模型」配/测视觉模型，「诊断」跑检测（上次结果会保留到下次检测），「配置」改截图/OCR 设置，「本地视觉·环境提示词」是框架原生页。
 - **看画面**：在「模型」页启用视觉模型并填端点（可点「获取可用模型」拉模型清单）；之后 `localvision_describe` 或 OCR 无文字时会按「优先选择的模型」（自动 / 本地 / 在线 / Coopanion）路由。
 
@@ -125,7 +128,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 <details>
 <summary>低配机 / 性能调优（本地视觉模型太慢怎么办）</summary>
 
-本地跑视觉大模型（如 `qwen2.5vl:3b`）单次调用动辄 20s+（实测约 24.6s），主要是 **CPU 推理 + 1280×800 截图的视觉 token 预填充太重**；若每次调用都重新加载模型会更慢。按下面顺序调，收益从大到小：
+在入门级硬件上本地跑视觉大模型（如 `qwen2.5vl:3b`）单次调用动辄 20s+（实测约 24.6s），瓶颈主要是 **CPU 推理 + 1280×800 截图的视觉 token 预填充太重**；若每次调用都重新加载模型会更慢。按下面顺序调，收益从大到小：
 
 1. **纯文字需求直接跳过模型（零成本、最稳）**：把 `visionStrategy` 设为 `ocr-only`，屏幕只有文字时完全不调视觉模型。OCR 首次冷启动约 8.8s，之后通常几秒内返回。
 2. **降分辨率（视觉 token 收益最大）**：`screenshotMaxWidth/Height` 从 `1280×800` 降到 `960×600`，甚至 `768×480`。视觉 token 数随分辨率近似**平方**下降，对 CPU 推理速度影响最直接。
@@ -144,7 +147,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部）、`expand?`（region 向外扩展的像素，默认 100，自动重截并兜底重试，无需算坐标） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
+| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部）、`expand?`（搭配 `region`：向外扩展的像素，默认 `100`；自动重截并在 OCR 落空时兜底再扩一轮，无需模型算坐标） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
 | `localvision_ocr` | `display?`、`region?` | 纯文本（不含坐标、不回退图片） |
 | `localvision_describe` | `prompt?`、`display?`、`region?` | 用视觉模型描述画面；按「优先选择的模型」路由到本地端点 / 在线端点 / Coopanion 模型商 |
 | `localvision_doctor` | `checkModel?` | 诊断报告：屏幕/DPI、OCR 语言与缓存、硬拦截、视觉模型端点；`checkModel:true` 会实测端点 |
@@ -188,5 +191,14 @@ npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动
 </details>
 
 ---
+
+## 0.3.1（暂未发布）
+
+> 本版本已合并、尚未发布到扩展市场。发布后此节并入更新日志。
+
+- **诊断面板新增「设备压力负载」进度条**：一眼看清当前 CPU / 内存占用（绿 < 60% / 黄 60–85% / 红 ≥ 85%）；入门显卡（如 GTX 1650 / 4GB）跑本地视觉模型时压力会直接顶到红区。
+- **低配机 / 性能调优指引**：README 新增折叠块，给出 7 条缓解方案（OCR-only、降分辨率、降 maxTokens、模型常驻、确认 GPU、换小模型、detail=low），按收益从大到小排序。
+- **环境提示词新增卡顿应对指引**：用户反馈「识别慢 / 卡顿」时，桌宠能建议更换更好的设备，或调低分辨率 / maxTokens / detail 等参数。
+- **`localvision_see` 新增 `expand` 一键向外延伸**：传 `region` 时带 `expand`（默认 100），插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空时自动再扩一轮重试。
 
 MIT。
