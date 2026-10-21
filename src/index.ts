@@ -342,12 +342,12 @@ function ocrConfigGroup(lang: string): ConfigGroup {
         [`${K}.screenshotMaxHeight`]: { type: 'integer', title: zh ? '截图最大高' : 'Max height', minimum: 240, maximum: 2160, 'x-suffix': 'px', 'x-hot': true },
         [`${K}.onOcrEmpty`]: {
           type: 'string',
-          title: zh ? 'OCR 无文字时' : 'When OCR finds nothing',
+          title: zh ? 'OCR 兜底方式' : 'OCR fallback',
           enum: ['image', 'text'],
           'x-options': 'localvision.onOcrEmpty',
           description: zh
-            ? '图片：截图将从 Coopanion 模型走（会正常消耗 token）。\n仅限文字：只能识别文字，无法打游戏、看视频（默认 OCR 优先，大幅度降低 token 开销）。'
-            : 'Image: the screenshot goes to the Coopanion model (costs tokens).\nText only: text recognition only — no games or video (default, OCR first, far fewer tokens).',
+            ? '图片（默认）：OCR 认不出字时，把截图发给 Coopanion 已配的模型兜底，看得懂游戏、视频等画面（会消耗 token）。\n文本：只返回识别到的文字，不发图、零额外开销。'
+            : 'Image (default): when OCR finds no text, the screenshot is sent to the Coopanion model as a fallback — it can read games, video, etc. (costs tokens).\nText: returns recognized text only; no image is sent and no extra cost.',
           'x-hot': true,
         },
         [`${K}.expandDefault`]: {
@@ -386,7 +386,7 @@ export default {
     screenshotMaxHeight: 800,
     hookIntercept: true,
     hookTools: ['pet_cua_screenshot', 'pet_cua_zoom', 'cua_screenshot', 'cua_zoom'],
-    onOcrEmpty: 'text',
+    onOcrEmpty: 'image',
     localModelEnabled: false,
     localModelProvider: 'qwen',
     localModelBaseUrl: '',
@@ -409,7 +409,7 @@ export default {
   },
   /**
    * 配置页下拉的显示名（x-options）：存储值仍是英文，界面显示中文。
-   * 感知优先级只暴露 自动 / 模型 / OCR-only 三项；OCR 无文字时显示 图片 / 文本。
+   * 感知优先级只暴露 自动 / 模型 / OCR-only 三项；OCR 兜底方式显示 图片 / 文本（默认 图片）。
    */
   configOptions: (kind: string, lang: string) => {
     const zh = lang !== 'en';
@@ -820,7 +820,7 @@ class LocalVisionWorld {
     if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
     if (cfg.localModelEnabled && !modelConfigured) tips.push('视觉模型已启用但缺地址/模型名');
     if (cfg.onOcrEmpty === 'image' && !(cfg.localModelEnabled && cfg.localModelBaseUrl.trim() && cfg.localModelName.trim()))
-      tips.push('「OCR 无文字时」设为 image 但视觉模型未配置：没认出字时截图会发给 Coopanion 已配的模型（费 token）；不需要请在「配置」页改回 text');
+      tips.push('「OCR 兜底方式」为 图片 但视觉模型未配置：OCR 认不出字时截图会发给 Coopanion 已配的模型（费 token）；不需要请在「配置」页改为 文本');
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
     if (tips.length) lines.push(`建议: ${tips.join('；')}`);
 
@@ -984,13 +984,13 @@ class LocalVisionWorld {
       text:
         `${base}\n[本机 OCR] 未识别到文字，且不会把截图发给云端模型。` +
         (this.acceptsImage
-          ? '要看图：在「模型」页配置视觉模型，或在「配置」页把「OCR 无文字时」设为 image（会消耗 token）。'
+          ? '要看图：在「模型」页配置视觉模型，或在「配置」页把「OCR 兜底方式」设为 图片（会消耗 token）。'
           : '当前对话模型不接收图片。') +
         `\n可以用 pet_cua_windows 列窗口，或直接按已知坐标操作。`,
     });
 
     // 链尾兜底 = Coopanion 模型商：把截图作为图片交给对话模型。
-    // 「OCR 无文字时」设为 image、或显式把优先级设为 coop，才真正发图。
+    // 「OCR 兜底方式」设为 图片、或显式把优先级设为 coop，才真正发图。
     const coopFallback = (): ToolOutcome =>
       (cfg.onOcrEmpty === 'image' || cfg.localModelPriority === 'coop') && this.acceptsImage ? imageNow() : noteNow();
 

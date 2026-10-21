@@ -83,7 +83,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 | `screenshotMaxHeight` | `800` | 同上 |
 | `hookIntercept` | `true` | **硬拦截**：注册核心 hook，把内置 cua 的截图回执换成 OCR 文本（框架没打 hook 时自动降级）。关闭即时生效，**重新开启需重启 World** |
 | `hookTools` | `["pet_cua_screenshot","pet_cua_zoom","cua_screenshot","cua_zoom"]` | 额外强制拦截的工具名；带 `screen/zoom/截图` 特征的 blob 无论工具名都会被拦 |
-| `onOcrEmpty` | `"text"` | OCR 找不到文字时怎么办（硬拦截截图与 `localvision_see` 共用）：`image` 把截图发给 Coopanion 已配的模型（**费 token**），`text` 丢弃图片只留提示（默认，OCR 优先，大幅度降低 token 开销） |
+| `onOcrEmpty` | `"image"` | OCR 兜底方式（硬拦截截图与 `localvision_see` 共用）：`image` OCR 认不出字时把截图发给 Coopanion 已配的模型兜底，看得懂游戏、视频等画面（**费 token**，默认）；`text` 只返回文字，不发图、零额外开销 |
 | `visionStrategy` | `"auto"` | 感知顺序，界面只给三项：`auto` 自动（OCR>视觉模型>图片上传）/ `model-first` 模型（先视觉模型，OCR 兜底）/ `ocr-only` 只 OCR。旧值 `model-only`、`image-only` 代码仍支持 |
 | `localModelPriority` | `"auto"` | 优先选择的模型（看图）：`auto` 按本地>在线>Coopanion 兜底自动路由（端点按地址自动判本地/在线）；`local` / `online` 只用对应端点；`coop` 直接把截图交给 Coopanion 对话模型 |
 | `localModelEnabled` | `false` | 启用视觉模型（本地或线上；游戏/图片/图表等 OCR 读不出的内容） |
@@ -121,7 +121,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 - 选厂商预设后地址可留空（用默认地址）、协议选 `auto`（用默认协议）；模型必须支持图片输入，文本模型会在 `localvision_describe` 报错。
 - 本地：Ollama `ollama pull qwen2.5vl:7b`；LM Studio 加载视觉模型后照界面填端点与模型名。
-- 不想填端点、直接用 Coopanion 已配的模型看图：「优先选择的模型」设 `Coopanion`（截图交给对话模型，费 token），或「OCR 无文字时」设 `图片`（仅无文字时回退，默认 `文本` 不发图）。
+- 不想填端点、直接用 Coopanion 已配的模型看图：「优先选择的模型」设 `Coopanion`（截图交给对话模型，费 token），或保持「OCR 兜底方式」为 `图片`（默认，仅 OCR 认不出字时才发图）；不想发图改为 `文本`。
 - 默认关闭：不配端点就不会发起任何本地或网络请求。面板改动即时保存，改完 `src/webui/` 需重新 `npm run build:web` 并重启进程。
 </details>
 
@@ -201,5 +201,6 @@ npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动
 - **环境提示词新增卡顿应对指引**：用户反馈「识别慢 / 卡顿」时，桌宠能建议更换更好的设备，或调低分辨率 / maxTokens / detail 等参数。
 - **`localvision_see` 新增 `expand` 一键向外延伸**：传 `region` 时带 `expand`，插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空时自动再扩一轮重试。配置页新增「默认外扩像素」（默认 100，0 = 关闭外扩与重试），不传 `expand` 时生效。
 - **诊断面板新增「提交 Issue」入口与反馈引导**：面板内一键直达仓库 issue 页（免去从扩展市场层层翻找）；并提示把上方诊断（已自动脱敏，不含画面内容与密钥）复制贴进 issue 正文。诊断文本已做敏感数据预清理（API Key 完全遮罩 + `sk-/pk-/Bearer` 令牌兜底剔除）。
+- **「OCR 兜底方式」更名、说明重写并默认改为图片**：原「OCR 无文字时」更名为「OCR 兜底方式」，两行说明对齐重写；默认值由 `文本` 改为 `图片`——只有 OCR 认不出字（游戏、视频等纯画面）时才把截图发给 Coopanion 已配的模型，文字场景照旧零开销，桌宠开箱即可"看懂"画面；不想发图的用户可改回 `文本`。已保存过配置的老用户不受影响（保持原值）。
 
 MIT。
