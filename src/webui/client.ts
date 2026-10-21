@@ -338,6 +338,9 @@ const model: WebUiPanel = {
 /** 上次诊断报告：存 localStorage，跨页签/刷新保留，直到下次检测覆盖。 */
 const REPORT_KEY = 'localvision:lastReport';
 
+/** 反馈入口：直接去仓库开 issue，省去从扩展市场层层翻找。 */
+const REPO_ISSUES_URL = 'https://github.com/HY-pt/cortico-world-localvision/issues/new';
+
 /** 「诊断」面板：懒加载——点「运行诊断」才采集；上次结果保留到下次检测覆盖。 */
 const diagnostics: WebUiPanel = {
   mount(ctx) {
@@ -357,10 +360,22 @@ const diagnostics: WebUiPanel = {
     const run = ui.button(t('运行诊断', 'Run'), { size: 'sm', variant: 'primary' });
     const patch = ui.button(t('打核心补丁', 'Patch core'), { size: 'sm' });
     const copy = ui.copyButton(() => lastText);
+    const issue = ui.h('a', 'lv-link', t('提交 Issue ↗', 'File an issue ↗'));
+    issue.setAttribute('href', REPO_ISSUES_URL);
+    issue.setAttribute('target', '_blank');
+    issue.setAttribute('rel', 'noreferrer noopener');
     const msg = ui.msgline(t('尚未检测。', 'Not run yet.'));
-    bar.append(run, patch, copy, msg);
+    bar.append(run, patch, copy, issue, msg);
     const body = ui.h('div', 'lv-body');
-    card.body.append(bar, body);
+    const guide = ui.h(
+      'div',
+      'lv-issue-guide',
+      t(
+        '遇到问题？点「提交 Issue ↗」去仓库反馈，再把上方诊断用「复制」按钮复制（已自动脱敏，不含画面内容与密钥）贴进正文即可，无需绕去扩展市场层层翻找。',
+        'Hit an issue? Tap "File an issue ↗" to open the repo, then copy the diagnostics above via the Copy button (auto-redacted — no screen content or keys) and paste into the issue body. No need to dig through the extension market.',
+      ),
+    );
+    card.body.append(bar, guide, body);
 
     let lastText = '';
     const rowsInto = (parent: HTMLElement, rows: Row[]) => {

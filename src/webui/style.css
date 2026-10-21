@@ -256,6 +256,35 @@
   font-size: 12.5px;
   line-height: 1.5;
 }
+.lv-app .lv-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  border-radius: 7px;
+  border: 1px solid var(--lv-line);
+  background: var(--lv-fill);
+  color: var(--lv-accent);
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+}
+.lv-app .lv-link:hover {
+  border-color: var(--lv-accent);
+  background: color-mix(in srgb, var(--lv-accent) 12%, var(--lv-fill));
+}
+.lv-app .lv-issue-guide {
+  padding: 8px 10px;
+  margin: 8px 0 2px;
+  border-radius: 6px;
+  background: var(--lv-fill);
+  border: 1px solid var(--lv-line);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--lv-muted);
+}
 .lv-app .lv-raw {
   margin-top: 10px;
 }

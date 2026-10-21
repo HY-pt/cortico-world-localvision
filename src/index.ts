@@ -781,7 +781,8 @@ class LocalVisionWorld {
 
     const endpoint = resolveEndpoint(cfg);
     const modelConfigured = cfg.localModelEnabled && !!endpoint.base && !!cfg.localModelName.trim();
-    const maskedKey = cfg.localModelApiKey ? `已填(${cfg.localModelApiKey.slice(0, 4)}…)` : '未填';
+    // 完全遮罩 API Key：不在诊断里泄露任何字符（含前缀），由 redactSecrets 兜底二次清理。
+    const maskedKey = cfg.localModelApiKey ? '已填' : '未填';
     let endpointCheck: string | null = null;
     if (checkModel) {
       if (!modelConfigured) {
@@ -855,7 +856,23 @@ class LocalVisionWorld {
       },
     ];
 
-    return { text: lines.join('\n'), sections, model, tips, gauges };
+    // 诊断文本脱敏：彻底剔除 API Key 与常见令牌，确保上报/复制出去不含敏感数据。
+    const safeText = redactSecrets(lines.join('\n'), cfg.localModelApiKey);
+    return { text: safeText, sections, model, tips, gauges };
+  }
+
+  /**
+   * 诊断文本预清理：把可能的敏感凭据剔除后再上报/复制。
+   * - 真实 API Key 全量替换（即使前面只存了前 4 位，这里也兜底）。
+   * - 常见令牌形态：sk-/pk-/rk- 开头的长串、Bearer 令牌。
+   * 诊断本身不截屏、不含画面内容，这里只针对凭据做最小化清洗。
+   */
+  private redactSecrets(text: string, apiKey: string): string {
+    let out = text;
+    if (apiKey && apiKey.length) out = out.split(apiKey).join('••••');
+    out = out.replace(/(sk|pk|rk)-[A-Za-z0-9]{16,}/g, '••••');
+    out = out.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer ••••');
+    return out;
   }
 
   /** 工具的诊断入口：只返回文本报告。 */
