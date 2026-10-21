@@ -154,24 +154,34 @@ export interface DoctorReport {
   gauges?: DoctorGauge[];
 }
 
-/** 采样两次 os.cpus() 求短时间 CPU 占用百分比。Windows 的 os.loadavg() 恒为 0，必须用差值法。 */
-async function sampleCpuLoad(sampleMs = 280): Promise<number> {
-  const sum = (cs: NodeJS.CpuInfo[]) =>
-    cs.reduce(
-      (acc, c) => {
-        acc.idle += c.times.idle;
-        acc.total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
-        return acc;
-      },
-      { idle: 0, total: 0 },
-    );
-  const a = sum(cpus());
-  await new Promise((r) => setTimeout(r, sampleMs));
-  const b = sum(cpus());
+/** 取一次 os.cpus() 的累计时间片快照（差值法用）。 */
+function cpuSnapshot(): { idle: number; total: number } {
+  return cpus().reduce(
+    (acc, c) => {
+      acc.idle += c.times.idle;
+      acc.total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
+      return acc;
+    },
+    { idle: 0, total: 0 },
+  );
+}
+
+/** 由前后两次快照求 CPU 占用百分比。 */
+function cpuPercent(a: { idle: number; total: number }, b: { idle: number; total: number }): number {
   const idle = b.idle - a.idle;
   const total = b.total - a.total;
   if (total <= 0) return 0;
   return Math.max(0, Math.min(100, Math.round((1 - idle / total) * 100)));
+}
+
+/** 采样某段异步任务（如一次截图尝试）期间的 CPU 占用百分比；任务太快时补足采样窗口防失真。 */
+async function sampleCpuDuring<T>(task: () => Promise<T>): Promise<{ value: T; cpuLoad: number }> {
+  const a = cpuSnapshot();
+  const t0 = Date.now();
+  const value = await task();
+  const elapsed = Date.now() - t0;
+  if (elapsed < 280) await new Promise((r) => setTimeout(r, 280 - elapsed));
+  return { value, cpuLoad: cpuPercent(a, cpuSnapshot()) };
 }
 
 /** 厂商预设：只提供 base URL 与默认协议，用户仍可用地址/协议覆盖。 */
@@ -776,10 +786,31 @@ class LocalVisionWorld {
     }
     lines.push(`语言包缓存: ${langCache}`);
 
+    const endpoint = resolveEndpoint(cfg);
+    const modelConfigured = cfg.localModelEnabled && !!endpoint.base && !!cfg.localModelName.trim();
+    // 端点是否本机地址（本地模型才谈得上「本机硬件压力」）。
+    const localEndpoint = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(endpoint.base);
+    // 本地模型是否真正参与本机推理：启用 + 配置齐全 + 端点为本机 + 优先级未显式指到 Coopanion。
+    const localActive = cfg.localModelEnabled && modelConfigured && localEndpoint && cfg.localModelPriority !== 'coop';
+    const cpuCores = cpus().length;
+    // 设备压力负载：本地模型用户按「当前设置的一次截图尝试」实测硬件压力；
+    // 在线 / Coopanion 模型商推理不在本机，直接 0%。
+    let cpuLoad = 0;
+    let loadNote = '未使用本地模型（在线 / Coopanion 模型商，本机无推理负载）';
+
     let shotBase64 = '';
     let screen = '';
     try {
-      const shot = await captureScreenshot({ maxWidth: cfg.screenshotMaxWidth, maxHeight: cfg.screenshotMaxHeight });
+      const capture = () => captureScreenshot({ maxWidth: cfg.screenshotMaxWidth, maxHeight: cfg.screenshotMaxHeight });
+      let shot: Awaited<ReturnType<typeof captureScreenshot>>;
+      if (localActive) {
+        const r = await sampleCpuDuring(capture);
+        shot = r.value;
+        cpuLoad = r.cpuLoad;
+        loadNote = `一次截图尝试实测（${cpuCores} 核，${cfg.screenshotMaxWidth}×${cfg.screenshotMaxHeight}）`;
+      } else {
+        shot = await capture();
+      }
       shotBase64 = shot.base64;
       const f = this.fullScaleOf(shot.nativeWidth, shot.nativeHeight);
       screen =
@@ -793,8 +824,6 @@ class LocalVisionWorld {
     const hook = this.unregisterHook ? '已注册（核心 hook 生效）' : '未注册（框架没打 hook 或 hookIntercept=false）';
     lines.push(`硬拦截: ${hook}`);
 
-    const endpoint = resolveEndpoint(cfg);
-    const modelConfigured = cfg.localModelEnabled && !!endpoint.base && !!cfg.localModelName.trim();
     // 完全遮罩 API Key：不在诊断里泄露任何字符（含前缀），由 redactSecrets 兜底二次清理。
     const maskedKey = cfg.localModelApiKey ? '已填' : '未填';
     let endpointCheck: string | null = null;
@@ -815,6 +844,15 @@ class LocalVisionWorld {
       `模型 ${cfg.localModelName || '(空)'}; Key ${maskedKey}; maxTokens ${cfg.localModelMaxTokens}, temp ${cfg.localModelTemperature}, detail ${cfg.localModelDetail}`,
     );
 
+    // 运行环境的「模型」行：当前实际由谁看图（本地 / 在线 / 未启用时 Coopanion 模型商）。
+    const modelBadge =
+      cfg.localModelEnabled && modelConfigured && cfg.localModelPriority !== 'coop'
+        ? localEndpoint
+          ? '本地模型 ✓'
+          : '在线模型 ✓'
+        : 'Coopanion 模型商 ✓';
+    lines.push(`模型: ${modelBadge}`);
+
     const tips: string[] = [];
     if (!cachedLangs.includes(resolved)) tips.push(`语言包 ${resolved} 还没缓存，首次 OCR 会下载`);
     if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
@@ -824,18 +862,18 @@ class LocalVisionWorld {
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
     if (tips.length) lines.push(`建议: ${tips.join('；')}`);
 
-    // 设备压力负载：采样一次 CPU + 当前内存占用（仅诊断时，不影响日常感知）。
-    const cpuCores = cpus().length;
-    const cpuLoad = await sampleCpuLoad();
+    // 设备压力负载进度条：本地模型 = 截图尝试期间实测；在线 / Coopanion 模型商 = 0%。
     const totalMem = totalmem();
     const usedMem = totalMem - freemem();
     const memPct = Math.round((usedMem / totalMem) * 100);
     const gb = (n: number) => (n / 1024 ** 3).toFixed(1);
-    const gauges: DoctorGauge[] = [
-      { label: 'CPU 负载', percent: cpuLoad, detail: `${cpuCores} 核` },
-      { label: '内存占用', percent: memPct, detail: `${gb(usedMem)} / ${gb(totalMem)} GB` },
-    ];
-    lines.push(`设备压力: CPU ${cpuLoad}% / 内存 ${memPct}%`);
+    const gauges: DoctorGauge[] = localActive
+      ? [
+          { label: 'CPU 负载', percent: cpuLoad, detail: loadNote },
+          { label: '内存占用', percent: memPct, detail: `${gb(usedMem)} / ${gb(totalMem)} GB` },
+        ]
+      : [{ label: '本地推理负载', percent: 0, detail: loadNote }];
+    lines.push(localActive ? `设备压力: CPU ${cpuLoad}% / 内存 ${memPct}%` : `设备压力: 本地推理负载 0%（${loadNote}）`);
 
     const model: DoctorRow[] = [
       { label: '状态', value: cfg.localModelEnabled ? '已启用' : '未启用' },
@@ -858,6 +896,7 @@ class LocalVisionWorld {
           { label: '系统语言', value: locale || '(未知)' },
           { label: '屏幕', value: screen },
           { label: '硬拦截', value: hook },
+          { label: '模型', value: modelBadge },
         ],
       },
       {
@@ -871,7 +910,7 @@ class LocalVisionWorld {
     ];
 
     // 诊断文本脱敏：彻底剔除 API Key 与常见令牌，确保上报/复制出去不含敏感数据。
-    const safeText = redactSecrets(lines.join('\n'), cfg.localModelApiKey);
+    const safeText = this.redactSecrets(lines.join('\n'), cfg.localModelApiKey);
     return { text: safeText, sections, model, tips, gauges };
   }
 

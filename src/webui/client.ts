@@ -365,7 +365,8 @@ const diagnostics: WebUiPanel = {
     issue.setAttribute('target', '_blank');
     issue.setAttribute('rel', 'noreferrer noopener');
     const msg = ui.msgline(t('尚未检测。', 'Not run yet.'));
-    bar.append(run, patch, copy, issue, msg);
+    // 顺序按使用逻辑：运行诊断 → 复制 → 提交 Issue（反馈三连）；「打核心补丁」是低频维护动作，放最后。
+    bar.append(run, copy, issue, patch, msg);
     const body = ui.h('div', 'lv-body');
     const guide = ui.h(
       'div',
