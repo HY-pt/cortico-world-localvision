@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import type { WorldDefinition } from 'cortico/world.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { ToolDef, ToolOutcome, WorldHost } from 'cortico/core/types.ts';
-import { captureScreenshot } from './screenshot.ts';
+import { captureScreenshot, type CaptureResult } from './screenshot.ts';
 import {
   autoOcrLang,
   disposeOcr,
@@ -100,6 +100,16 @@ function parseRegion(v: unknown): Region | undefined {
   const w = num('w');
   const h = num('h');
   if (x === null || y === null || w === null || h === null || w < 1 || h < 1) return undefined;
+  return { x, y, w, h };
+}
+
+/** 在截图坐标空间（与 localvision_see 返回坐标同一空间）把 region 向外扩展 expand 像素，并 clamp 到屏幕边界。 */
+function expandRegionInScaledSpace(region: Region, expand: number, boundsW: number, boundsH: number): Region {
+  if (!(expand > 0)) return region;
+  const x = Math.max(0, Math.round(region.x - expand));
+  const y = Math.max(0, Math.round(region.y - expand));
+  const w = Math.max(1, Math.min(region.w + expand * 2, Math.floor(boundsW) - x));
+  const h = Math.max(1, Math.min(region.h + expand * 2, Math.floor(boundsH) - y));
   return { x, y, w, h };
 }
 
@@ -218,7 +228,7 @@ const TOOL_DECLS = [
     name: 'localvision_see',
     description:
       '看屏幕：在本机截屏后用本机 OCR 把可见文字转成「文字 + 截图像素坐标」返回，默认不向云端上传图片（省 token）。' +
-      '小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别。' +
+      '小字看不清时，可用上一次返回的坐标传 region 再 OCR 一次，会在原始分辨率下识别；没看清时也可直接传 expand（像素值，默认 100），插件会自动把 region 向外扩大再截并兜底重试，不用你算坐标。' +
       '屏幕上一行文字都没有时，按配置处理：默认只回文字提示（最省 token）；也可交给视觉模型（本地端点 / 在线端点 / Coopanion 模型商）或直接上传图片（费 token）。' +
       '返回的坐标可直接传给内置的 pet_cua_click（同一显示器、默认 1280×800 缩放）。',
     parameters: {
@@ -234,6 +244,12 @@ const TOOL_DECLS = [
           description: '可选：只想关注的内容（例如"右上角的按钮"）。仅作为提示，不影响 OCR 结果。',
         },
         region: REGION,
+        expand: {
+          type: 'integer',
+          minimum: 0,
+          description:
+            '只截了部分（传了 region）时，向外扩展的像素值（截图坐标空间），默认 100。插件内部自动把 region 扩大后再截并兜底重试，无需模型算精准坐标；没传 region 时无效。',
+        },
       },
       required: [],
     },
@@ -542,7 +558,7 @@ class LocalVisionWorld {
     return Math.min(this.cfg.screenshotMaxWidth / nativeWidth, this.cfg.screenshotMaxHeight / nativeHeight, 1);
   }
 
-  private async capture(display: unknown, region?: Region) {
+  private async capture(display: unknown, region?: Region, expand = 0) {
     const monitor = toMonitor(display);
     if (monitor === null) throw new Error('display 要是 1 起的整数');
     const base = { maxWidth: this.cfg.screenshotMaxWidth, maxHeight: this.cfg.screenshotMaxHeight, monitor };
@@ -558,15 +574,16 @@ class LocalVisionWorld {
       const f = this.lastView.fullScale;
       const nw = this.lastView.nativeWidth;
       const nh = this.lastView.nativeHeight;
-      const x = Math.max(0, Math.min(region.x / f, nw - 1));
-      const y = Math.max(0, Math.min(region.y / f, nh - 1));
+      const r = expandRegionInScaledSpace(region, expand, nw / f, nh / f);
+      const x = Math.max(0, Math.min(r.x / f, nw - 1));
+      const y = Math.max(0, Math.min(r.y / f, nh - 1));
       shot = await captureScreenshot({
         ...base,
         region: {
           x,
           y,
-          w: Math.max(1, Math.min(region.w / f, nw - x)),
-          h: Math.max(1, Math.min(region.h / f, nh - y)),
+          w: Math.max(1, Math.min(r.w / f, nw - x)),
+          h: Math.max(1, Math.min(r.h / f, nh - y)),
         },
       });
     } else {
@@ -847,33 +864,51 @@ class LocalVisionWorld {
     return { text: d.text };
   }
 
+  /** 对单张截图做本机 OCR，返回「文字 + 坐标」结果；无文字或失败时返回 null。 */
+  private async ocrOutcome(img: CaptureResult, display: unknown): Promise<ToolOutcome | null> {
+    try {
+      const words = await this.runOcr(img.base64, this.ocrOptions(img));
+      if (!words.length) return null;
+      const f = this.fullScaleOf(img.nativeWidth, img.nativeHeight);
+      const map = (nx: number, ny: number) => ({
+        x: (img.regionX + nx * img.regionW) * f,
+        y: (img.regionY + ny * img.regionH) * f,
+      });
+      const isCrop = img.regionW < img.nativeWidth || img.regionH < img.nativeHeight;
+      const area = isCrop ? `，区域 ${img.regionW}×${img.regionH} 原生像素` : '';
+      const base = `截图 ${img.scaledWidth}×${img.scaledHeight}${area}（屏幕 ${img.nativeWidth}×${img.nativeHeight}）。`;
+      return {
+        text:
+          `${base}\n[本机 OCR] 截图未上传，只返回文字与坐标：\n` +
+          ocrToLocatedTextMapped(words, map) +
+          `\n\n${this.hint(display, img)}`,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /** 按 `visionStrategy` 决定感知顺序：auto=OCR→模型→图片，默认 OCR 优先。 */
-  private async perceive(display: unknown, region: Region | undefined, prompt?: string): Promise<ToolOutcome> {
+  private async perceive(display: unknown, region: Region | undefined, prompt?: string, expand = 100): Promise<ToolOutcome> {
     const cfg = this.cfg;
-    const img = await this.capture(display, region);
+    const img = await this.capture(display, region, expand);
     const W = img.scaledWidth;
     const H = img.scaledHeight;
-    const f = this.fullScaleOf(img.nativeWidth, img.nativeHeight);
-    const map = (nx: number, ny: number) => ({
-      x: (img.regionX + nx * img.regionW) * f,
-      y: (img.regionY + ny * img.regionH) * f,
-    });
     const area = region ? `，区域 ${img.regionW}×${img.regionH} 原生像素` : '';
     const base = `截图 ${W}×${H}${area}（屏幕 ${img.nativeWidth}×${img.nativeHeight}）。`;
 
-    const ocrNow = async (): Promise<ToolOutcome | null> => {
-      try {
-        const words = await this.runOcr(img.base64, this.ocrOptions(img));
-        if (!words.length) return null;
-        return {
-          text:
-            `${base}\n[本机 OCR] 截图未上传，只返回文字与坐标：\n` +
-            ocrToLocatedTextMapped(words, map) +
-            `\n\n${this.hint(display, img)}`,
-        };
-      } catch {
-        return null;
+    // OCR 失败时，若传入了 expand 且有 region，自动把范围再扩大一轮重试一次（绝不麻烦模型算坐标）。
+    const ocrWithRetry = async (): Promise<ToolOutcome | null> => {
+      const first = await this.ocrOutcome(img, display);
+      if (first) return first;
+      if (expand > 0 && region) {
+        const retryImg = await this.capture(display, region, expand * 2);
+        const retry = await this.ocrOutcome(retryImg, display);
+        if (retry) {
+          return { ...retry, text: retry.text.replace('[本机 OCR]', '[本机 OCR] 没看清，已自动扩大范围重试一次') };
+        }
       }
+      return null;
     };
 
     // 模型优先级：auto=本地>在线>Coopanion 兜底；local/online 只用对应端点；coop=直接交给对话模型。
@@ -928,7 +963,7 @@ class LocalVisionWorld {
 
     switch (cfg.visionStrategy) {
       case 'ocr-only': {
-        const o = await ocrNow();
+        const o = await ocrWithRetry();
         return o ?? { text: `${base}\n[本机 OCR] 未识别到文字（ocr-only）。` };
       }
       case 'model-only': {
@@ -940,13 +975,13 @@ class LocalVisionWorld {
       case 'model-first': {
         const r = await modelNow();
         if (r) return r;
-        const o = await ocrNow();
+        const o = await ocrWithRetry();
         if (o) return o;
         return coopFallback();
       }
       case 'auto':
       default: {
-        const o = await ocrNow();
+        const o = await ocrWithRetry();
         if (o) return o;
         const r = await modelNow();
         if (r) return r;
@@ -959,7 +994,9 @@ class LocalVisionWorld {
     const handlers: Record<string, (args: Record<string, unknown>) => Promise<ToolOutcome>> = {
       localvision_see: async (args) => {
         const region = parseRegion(args.region);
-        return this.perceive(args.display, region, typeof args.prompt === 'string' ? args.prompt : undefined);
+        const expand =
+          typeof args.expand === 'number' && Number.isFinite(args.expand) && args.expand >= 0 ? args.expand : 100;
+        return this.perceive(args.display, region, typeof args.prompt === 'string' ? args.prompt : undefined, expand);
       },
       localvision_ocr: async (args) => {
         const region = parseRegion(args.region);

@@ -22,7 +22,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 ## 使用
 
 - **看屏**：模型自动走 `localvision_see`（文字 + 坐标，可直接传给 `pet_cua_click`）；`localvision_ocr` 只取纯文字；`localvision_doctor` 或「诊断」面板用于排错。
-- **小字**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。
+- **小字**：先用 `localvision_see` 拿坐标，再带 `region` 按原始分辨率重看那一块。看不清时也**直接传 `expand`（像素值，默认 100）**即可：插件自动把 `region` 向外扩大再截、**不用模型算坐标**；OCR 仍没字会自动再扩一轮重试。例：`localvision_see({ region: {x,y,w,h}, expand: 200 })`。
 - **World 页面签**：「模型」配/测视觉模型，「诊断」跑检测（上次结果会保留到下次检测），「配置」改截图/OCR 设置，「本地视觉·环境提示词」是框架原生页。
 - **看画面**：在「模型」页启用视觉模型并填端点（可点「获取可用模型」拉模型清单）；之后 `localvision_describe` 或 OCR 无文字时会按「优先选择的模型」（自动 / 本地 / 在线 / Coopanion）路由。
 
@@ -144,7 +144,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
+| `localvision_see` | `display?`（1 起）、`prompt?`（仅提示）、`region?`（截图坐标的局部）、`expand?`（region 向外扩展的像素，默认 100，自动重截并兜底重试，无需算坐标） | 阅读顺序文字 + 每个词的中心坐标（截图像素）；感知顺序由 `visionStrategy` 决定（默认 `auto`：OCR→模型→图片） |
 | `localvision_ocr` | `display?`、`region?` | 纯文本（不含坐标、不回退图片） |
 | `localvision_describe` | `prompt?`、`display?`、`region?` | 用视觉模型描述画面；按「优先选择的模型」路由到本地端点 / 在线端点 / Coopanion 模型商 |
 | `localvision_doctor` | `checkModel?` | 诊断报告：屏幕/DPI、OCR 语言与缓存、硬拦截、视觉模型端点；`checkModel:true` 会实测端点 |
