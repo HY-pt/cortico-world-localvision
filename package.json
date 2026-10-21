@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-localvision",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "main": "./src/index.ts",
   "description": "在本机把屏幕 OCR 成「文字 + 坐标」，默认不把截图发到云端，省掉每帧看屏的 token；可选接视觉模型，也可硬拦截内置截图。",
