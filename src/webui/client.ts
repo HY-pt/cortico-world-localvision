@@ -5,10 +5,16 @@ interface Row {
   label: string;
   value: string;
 }
+interface Gauge {
+  label: string;
+  percent: number;
+  detail?: string;
+}
 interface Report {
   text: string;
   sections: Array<{ title: string; rows: Row[] }>;
   tips: string[];
+  gauges?: Gauge[];
 }
 interface ModelState {
   enabled: boolean;
@@ -364,8 +370,27 @@ const diagnostics: WebUiPanel = {
         parent.appendChild(line);
       }
     };
+    const renderGauges = (parent: HTMLElement, gauges: Gauge[] | undefined) => {
+      if (!gauges || !gauges.length) return;
+      parent.appendChild(ui.section(t('设备压力负载', 'Device load')));
+      for (const g of gauges) {
+        const pct = Math.max(0, Math.min(100, Math.round(g.percent)));
+        const level = pct >= 85 ? 'bad' : pct >= 60 ? 'warn' : 'ok';
+        const wrap = ui.h('div', 'lv-gauge');
+        const head = ui.h('div', 'lv-gauge-head');
+        head.append(ui.h('span', 'lv-gauge-label', g.label), ui.h('span', `lv-gauge-pct lv-gauge-${level}`, `${pct}%`));
+        const track = ui.h('div', 'lv-gauge-track');
+        const fill = ui.h('div', `lv-gauge-fill lv-gauge-${level}`);
+        fill.style.width = `${pct}%`;
+        track.appendChild(fill);
+        wrap.append(head, track);
+        if (g.detail) wrap.appendChild(ui.h('div', 'lv-gauge-detail', g.detail));
+        parent.appendChild(wrap);
+      }
+    };
     const renderReport = (r: Report) => {
       body.textContent = '';
+      renderGauges(body, r.gauges);
       for (const section of r.sections ?? []) {
         body.appendChild(ui.section(section.title));
         rowsInto(body, section.rows);

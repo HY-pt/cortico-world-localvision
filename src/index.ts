@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, cpus, totalmem, freemem } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { WorldDefinition } from 'cortico/world.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
@@ -125,11 +125,41 @@ export interface DoctorSection {
   title: string;
   rows: DoctorRow[];
 }
+/** 设备压力负载进度条：诊断时采样，前端按 percent 画条。 */
+export interface DoctorGauge {
+  label: string;
+  /** 0–100 的占用百分比（CPU 负载 / 内存占用）。 */
+  percent: number;
+  /** 进度条右侧补充文字，如核心数、已用/总量。 */
+  detail?: string;
+}
 export interface DoctorReport {
   text: string;
   sections: DoctorSection[];
   model: DoctorRow[];
   tips: string[];
+  /** 设备压力负载进度条（CPU / 内存）。 */
+  gauges?: DoctorGauge[];
+}
+
+/** 采样两次 os.cpus() 求短时间 CPU 占用百分比。Windows 的 os.loadavg() 恒为 0，必须用差值法。 */
+async function sampleCpuLoad(sampleMs = 280): Promise<number> {
+  const sum = (cs: NodeJS.CpuInfo[]) =>
+    cs.reduce(
+      (acc, c) => {
+        acc.idle += c.times.idle;
+        acc.total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
+        return acc;
+      },
+      { idle: 0, total: 0 },
+    );
+  const a = sum(cpus());
+  await new Promise((r) => setTimeout(r, sampleMs));
+  const b = sum(cpus());
+  const idle = b.idle - a.idle;
+  const total = b.total - a.total;
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((1 - idle / total) * 100)));
 }
 
 /** 厂商预设：只提供 base URL 与默认协议，用户仍可用地址/协议覆盖。 */
@@ -329,10 +359,10 @@ export default {
     hookTools: ['pet_cua_screenshot', 'pet_cua_zoom', 'cua_screenshot', 'cua_zoom'],
     onOcrEmpty: 'text',
     localModelEnabled: false,
-    localModelProvider: 'custom',
+    localModelProvider: 'qwen',
     localModelBaseUrl: '',
     localModelApiKey: '',
-    localModelName: '',
+    localModelName: 'qwen-vl-plus',
     localModelTimeoutMs: 20000,
     localModelProtocol: 'auto',
     localModelPath: '/chat/completions',
@@ -341,7 +371,7 @@ export default {
     localModelPrompt: '',
     localModelDetail: 'auto',
     visionStrategy: 'auto',
-    localModelPriority: 'auto',
+    localModelPriority: 'online',
   }),
   describe: {
     tools: TOOL_DECLS,
@@ -762,6 +792,19 @@ class LocalVisionWorld {
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
     if (tips.length) lines.push(`建议: ${tips.join('；')}`);
 
+    // 设备压力负载：采样一次 CPU + 当前内存占用（仅诊断时，不影响日常感知）。
+    const cpuCores = cpus().length;
+    const cpuLoad = await sampleCpuLoad();
+    const totalMem = totalmem();
+    const usedMem = totalMem - freemem();
+    const memPct = Math.round((usedMem / totalMem) * 100);
+    const gb = (n: number) => (n / 1024 ** 3).toFixed(1);
+    const gauges: DoctorGauge[] = [
+      { label: 'CPU 负载', percent: cpuLoad, detail: `${cpuCores} 核` },
+      { label: '内存占用', percent: memPct, detail: `${gb(usedMem)} / ${gb(totalMem)} GB` },
+    ];
+    lines.push(`设备压力: CPU ${cpuLoad}% / 内存 ${memPct}%`);
+
     const model: DoctorRow[] = [
       { label: '状态', value: cfg.localModelEnabled ? '已启用' : '未启用' },
       { label: '厂商预设', value: cfg.localModelProvider },
@@ -795,7 +838,7 @@ class LocalVisionWorld {
       },
     ];
 
-    return { text: lines.join('\n'), sections, model, tips };
+    return { text: lines.join('\n'), sections, model, tips, gauges };
   }
 
   /** 工具的诊断入口：只返回文本报告。 */

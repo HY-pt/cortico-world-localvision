@@ -277,6 +277,59 @@
   border-radius: 8px;
 }
 
+/* 设备压力负载进度条 */
+.lv-app .lv-gauge {
+  margin: 10px 0;
+}
+.lv-app .lv-gauge-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12.5px;
+  margin-bottom: 5px;
+}
+.lv-app .lv-gauge-label {
+  opacity: 0.7;
+}
+.lv-app .lv-gauge-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.lv-app .lv-gauge-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lv-fill-2);
+  overflow: hidden;
+}
+.lv-app .lv-gauge-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.lv-app .lv-gauge-fill.lv-gauge-ok {
+  background: var(--lv-on);
+}
+.lv-app .lv-gauge-pct.lv-gauge-ok {
+  color: var(--lv-on);
+}
+.lv-app .lv-gauge-fill.lv-gauge-warn {
+  background: var(--lv-warn);
+}
+.lv-app .lv-gauge-pct.lv-gauge-warn {
+  color: var(--lv-warn);
+}
+.lv-app .lv-gauge-fill.lv-gauge-bad {
+  background: var(--lv-bad);
+}
+.lv-app .lv-gauge-pct.lv-gauge-bad {
+  color: var(--lv-bad);
+}
+.lv-app .lv-gauge-detail {
+  font-size: 11.5px;
+  opacity: 0.6;
+  margin-top: 3px;
+}
+
 /* 禁用态：关闭「启用视觉模型」后，端点/调参折叠卡整体灰掉且不可点（配置保留，只是不生效） */
 .lv-app .sheet.lv-off {
   opacity: 0.45;
