@@ -235,6 +235,15 @@ function resolveEndpoint(cfg: LocalVisionSection): {
   return { base, protocol };
 }
 
+/** modelRoute().blockedBy 的中文说明（诊断建议、端点检查共用）。 */
+const ROUTE_REASON: Record<string, string> = {
+  'not-enabled': '视觉模型未启用',
+  'missing-endpoint': '缺地址或模型名',
+  'missing-key': '在线端点缺 API Key',
+  priority: '优先级锁定与端点地址不一致',
+  coop: '优先级设为 Coopanion 模型商',
+};
+
 const TOOL_DECLS: readonly ToolDescribe[] = [
   {
     name: 'localvision_see',
@@ -794,12 +803,12 @@ class LocalVisionWorld {
     }
     lines.push(`语言包缓存: ${langCache}`);
 
-    const endpoint = resolveEndpoint(cfg);
-    const modelConfigured = cfg.localModelEnabled && !!endpoint.base && !!cfg.localModelName.trim();
+    const route = this.modelRoute();
+    const endpoint = route.endpoint;
     // 端点是否本机地址（本地模型才谈得上「本机硬件压力」）。
-    const localEndpoint = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(endpoint.base);
-    // 本地模型是否真正参与本机推理：启用 + 配置齐全 + 端点本机 + 优先级允许本地（auto / local）。
-    const localActive = cfg.localModelEnabled && modelConfigured && localEndpoint && (cfg.localModelPriority === 'auto' || cfg.localModelPriority === 'local');
+    const localEndpoint = route.kind === 'local';
+    // 本地模型是否真正参与本机推理：真的会用上（Key/优先级都过关）且端点在本机。
+    const localActive = route.usable && route.kind === 'local';
     const cpuCores = cpus().length;
     // 设备压力负载：本地模型用户按「当前设置的一次截图尝试」实测硬件压力；
     // 在线 / Coopanion 模型商推理不在本机，直接 0%。
@@ -836,8 +845,8 @@ class LocalVisionWorld {
     const maskedKey = cfg.localModelApiKey ? '已填' : '未填';
     let endpointCheck: string | null = null;
     if (checkModel) {
-      if (!modelConfigured) {
-        endpointCheck = '跳过（未启用或缺地址/模型名）';
+      if (!route.usable) {
+        endpointCheck = `跳过（${ROUTE_REASON[route.blockedBy] ?? route.blockedBy}）`;
       } else if (!shotBase64) {
         endpointCheck = '跳过（截屏失败，没有可发的图）';
       } else {
@@ -852,33 +861,23 @@ class LocalVisionWorld {
       `模型 ${cfg.localModelName || '(空)'}; Key ${maskedKey}; maxTokens ${cfg.localModelMaxTokens}, temp ${cfg.localModelTemperature}, detail ${cfg.localModelDetail}`,
     );
 
-    // 运行环境的「模型」行：当前实际由谁看图（与 perceive 里 visionUsable 的路由决策保持一致）。
-    // 优先级锁定与端点地址矛盾时（如 priority=online 但地址是本机），本地/在线端点根本不会被调用，
-    // 实际回退到 Coopanion 模型商——badge 要如实反映，避免误导排查。
-    const priorityMismatch =
-      cfg.localModelEnabled &&
-      modelConfigured &&
-      cfg.localModelPriority !== 'coop' &&
-      ((cfg.localModelPriority === 'local' && !localEndpoint) ||
-        (cfg.localModelPriority === 'online' && localEndpoint));
-    const modelBadge =
-      !cfg.localModelEnabled || !modelConfigured || cfg.localModelPriority === 'coop' || priorityMismatch
-        ? 'Coopanion 模型商 ✓'
-        : localEndpoint
-          ? '本地模型 ✓'
-          : '在线模型 ✓';
+    // 运行环境的「模型」行：当前**实际**由谁看图。
+    // 只有真的会被调用才显示「本地/在线模型 ✓」；用不了就如实显示 Coopanion 模型商 ✓（真实路由会回退到这里）。
+    const modelBadge = route.usable ? (route.kind === 'local' ? '本地模型 ✓' : '在线模型 ✓') : 'Coopanion 模型商 ✓';
     lines.push(`模型: ${modelBadge}`);
 
     const tips: string[] = [];
     if (!cachedLangs.includes(resolved)) tips.push(`语言包 ${resolved} 还没缓存，首次 OCR 会下载`);
     if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
-    if (cfg.localModelEnabled && !modelConfigured) tips.push('视觉模型已启用但缺地址/模型名');
-    if (priorityMismatch)
+    if (route.blockedBy === 'missing-endpoint') tips.push('视觉模型已启用但缺地址/模型名：请到「模型」页补全');
+    if (route.blockedBy === 'missing-key')
+      tips.push('视觉模型已启用，但在线端点没填 API Key：请求会 401 失败，实际用不上（到「模型」页填 Key，或改用本地模型）');
+    if (route.blockedBy === 'priority')
       tips.push(
         `「优先选择的模型」锁定与端点地址不一致（优先级=${cfg.localModelPriority}，地址=${localEndpoint ? '本机' : '在线'}）：` +
           '本地/在线模型不会被调用，实际走 Coopanion 模型商；需要请到「模型」页调整地址或优先级',
       );
-    if (cfg.onOcrEmpty === 'image' && !(cfg.localModelEnabled && cfg.localModelBaseUrl.trim() && cfg.localModelName.trim()))
+    if (cfg.onOcrEmpty === 'image' && !route.configured)
       tips.push('「OCR 兜底方式」为 图片 但视觉模型未配置：OCR 认不出字时截图会发给 Coopanion 已配的模型（费 token）；不需要请在「配置」页改为 文本');
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
     if (tips.length) lines.push(`建议: ${tips.join('；')}`);
@@ -1005,15 +1004,7 @@ class LocalVisionWorld {
     };
 
     // 模型优先级：auto=本地>在线>Coopanion 兜底；local/online 只用对应端点；coop=直接交给对话模型。
-    const endpointKind = (): 'local' | 'online' =>
-      /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(resolveEndpoint(cfg).base) ? 'local' : 'online';
-    const visionUsable = (): boolean => {
-      const { base } = resolveEndpoint(cfg);
-      if (!cfg.localModelEnabled || !base || !cfg.localModelName.trim()) return false;
-      if (cfg.localModelPriority === 'local') return endpointKind() === 'local';
-      if (cfg.localModelPriority === 'online') return endpointKind() === 'online';
-      return true; // auto：端点配好就用（本地/在线按地址自动判）
-    };
+    const visionUsable = (): boolean => this.modelRoute().usable;
 
     const modelNow = async (): Promise<ToolOutcome | null> => {
       if (cfg.localModelPriority === 'coop' || !visionUsable()) return null;
@@ -1108,7 +1099,8 @@ class LocalVisionWorld {
       },
       localvision_describe: async (args) => {
         const cfg = this.cfg;
-        const kind = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(resolveEndpoint(cfg).base) ? 'local' : 'online';
+        const route = this.modelRoute();
+        const kind = route.kind;
         if (cfg.localModelPriority === 'coop') {
           // 显式选 coop：把截图交给当前对话模型描述（cognition 传不了图，走图片回退）
           const region = parseRegion(args.region);
@@ -1136,6 +1128,13 @@ class LocalVisionWorld {
         }
         if (!resolveEndpoint(cfg).base || !cfg.localModelName.trim()) {
           return { text: '[localvision_describe] 视觉模型还缺「地址」或「模型名」。', failed: true };
+        }
+        if (route.blockedBy === 'missing-key') {
+          // 在线端点没 Key 就发请求必然 401，白跑一次；直接告诉用户去补 Key。
+          return {
+            text: '[localvision_describe] 在线端点需要 API Key：请到「模型」页填 API Key（本地模型可留空）。',
+            failed: true,
+          };
         }
         const region = parseRegion(args.region);
         const img = await this.capture(args.display, region);
@@ -1169,12 +1168,50 @@ class LocalVisionWorld {
     };
   }
 
+  /**
+   * 视觉模型的实际路由状态：**诊断展示与真实路由共用这一份判定**。
+   *
+   * 之前 badge 只看「启用 + 有地址 + 有模型名」，而地址来自厂商预设（qwen → dashscope）、
+   * 模型名来自默认值——于是「在线端点没填 API Key」也显示「在线模型 ✓」。但在线调用必须带 Key，
+   * 没 Key 必然 401 失败、最终回退 Coopanion，属于「报 A 实际 B」。这里把「能不能真用上」一次算清：
+   * - 在线端点必须有 API Key（本地 Ollama / LM Studio 可留空）；
+   * - 优先级锁定与端点地址矛盾时，本地/在线模型根本不会被调用；
+   * - 优先级=coop 时一律走 Coopanion 模型商。
+   */
+  private modelRoute(): {
+    endpoint: { base: string; protocol: 'openai-chat' | 'anthropic-messages' | 'openai-responses' | 'custom' };
+    kind: 'local' | 'online';
+    /** 启用 + 地址可解析 + 模型名非空。 */
+    configured: boolean;
+    hasKey: boolean;
+    /** 真的会被调用（含 Key、优先级不冲突）。 */
+    usable: boolean;
+    /** 不可用的原因；'' 表示可用。 */
+    blockedBy: '' | 'not-enabled' | 'missing-endpoint' | 'missing-key' | 'priority' | 'coop';
+  } {
+    const cfg = this.cfg;
+    const endpoint = resolveEndpoint(cfg);
+    // 本机端点判定（这里必须自己算，不能再调本方法，否则无限递归）。
+    const kind: 'local' | 'online' = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1])/i.test(endpoint.base) ? 'local' : 'online';
+    const hasKey = !!cfg.localModelApiKey?.trim();
+    const hasName = !!cfg.localModelName?.trim();
+    const configured = cfg.localModelEnabled && !!endpoint.base && hasName;
+    let blockedBy: 'not-enabled' | 'missing-endpoint' | 'missing-key' | 'priority' | 'coop' | '' = '';
+    if (cfg.localModelPriority === 'coop') blockedBy = 'coop';
+    else if (!cfg.localModelEnabled) blockedBy = 'not-enabled';
+    else if (!endpoint.base || !hasName) blockedBy = 'missing-endpoint';
+    else if (kind === 'online' && !hasKey) blockedBy = 'missing-key';
+    else if (cfg.localModelPriority === 'local' && kind !== 'local') blockedBy = 'priority';
+    else if (cfg.localModelPriority === 'online' && kind !== 'online') blockedBy = 'priority';
+    return { endpoint, kind, configured, hasKey, usable: blockedBy === '', blockedBy };
+  }
+
   /** 模型面板状态：只读本地配置并解析端点，不联网。 */
   private modelState() {
     const cfg = this.cfg;
     this.syncConfigSummary();
     const endpoint = resolveEndpoint(cfg);
-    const kind: 'local' | 'online' = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(endpoint.base) ? 'local' : 'online';
+    const kind = this.modelRoute().kind;
     return {
       enabled: cfg.localModelEnabled,
       provider: cfg.localModelProvider,
@@ -1218,7 +1255,7 @@ class LocalVisionWorld {
   }> {
     const cfg = this.cfg;
     const endpoint = resolveEndpoint(cfg);
-    const kind: 'local' | 'online' = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(endpoint.base) ? 'local' : 'online';
+    const kind = this.modelRoute().kind;
 
     if (!cfg.localModelEnabled || !endpoint.base || !cfg.localModelName.trim()) {
       const unconfigured = { ok: false, ms: 0, configured: false, detail: '未配置（缺启用/地址/模型名）' };
@@ -1259,7 +1296,7 @@ class LocalVisionWorld {
       return { ok: false, models: [], detail: '未启用视觉模型，请先在上方勾选' };
     }
     // 在线模型严格要求地址 + 密钥，缺了就直接提示，不发请求（避免莫名的 fetch failed）。
-    if (base && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(base) && !cfg.localModelApiKey.trim()) {
+    if (base && this.modelRoute().kind === 'online' && !cfg.localModelApiKey.trim()) {
       return { ok: false, models: [], detail: '缺少必要数据：在线模型需要先填 API Key（本地模型可留空）' };
     }
     // 本地放宽：密钥可空；地址没填时按厂商猜默认端口。
