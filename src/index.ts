@@ -24,7 +24,7 @@ import { tmpdir, cpus, totalmem, freemem } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { WorldDefinition } from 'cortico/world.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
-import type { ToolDef, ToolOutcome, WorldHost } from 'cortico/core/types.ts';
+import type { ToolDescribe, ToolDef, ToolOutcome, WorldHost } from 'cortico/core/types.ts';
 import { captureScreenshot, type CaptureResult } from './screenshot.ts';
 import {
   autoOcrLang,
@@ -235,7 +235,7 @@ function resolveEndpoint(cfg: LocalVisionSection): {
   return { base, protocol };
 }
 
-const TOOL_DECLS = [
+const TOOL_DECLS: readonly ToolDescribe[] = [
   {
     name: 'localvision_see',
     description:
@@ -386,10 +386,9 @@ function ocrConfigGroup(lang: string): ConfigGroup {
 }
 
 
-export default {
-  id: 'localvision',
-  label: '本地视觉 LocalVision',
-  defaults: (): LocalVisionSection => ({
+/** World 段默认值。ctx 未注入 cfg 时用它兜底，避免 screenshotMaxWidth 等字段缺失算出 NaN 坐标。 */
+function defaultLocalVisionSection(): LocalVisionSection {
+  return {
     enabled: false,
     ocrLang: 'auto',
     screenshotMaxWidth: 1280,
@@ -413,7 +412,13 @@ export default {
     expandDefault: 100,
     // 默认 auto：本机/在线按地址自动路由，本地 Ollama 等不会因优先级被静默跳过。
     localModelPriority: 'auto',
-  }),
+  };
+}
+
+export default {
+  id: 'localvision',
+  label: '本地视觉 LocalVision',
+  defaults: (): LocalVisionSection => defaultLocalVisionSection(),
   describe: {
     tools: TOOL_DECLS,
     events: [],
@@ -461,8 +466,8 @@ class LocalVisionWorld {
   constructor(private ctx: any) {}
 
   private get cfg(): LocalVisionSection {
-    // 框架的 WorldContext 字段是 cfg；config 只是旧版/测试上下文的兼容。
-    return (this.ctx?.cfg ?? this.ctx?.config ?? {}) as LocalVisionSection;
+    // 框架的 WorldContext 字段是 cfg；config 只是旧版/测试上下文的兼容；都拿不到时用默认值兜底。
+    return (this.ctx?.cfg ?? this.ctx?.config ?? defaultLocalVisionSection()) as LocalVisionSection;
   }
 
   async start(host: WorldHost): Promise<void> {
@@ -646,7 +651,9 @@ class LocalVisionWorld {
     const maxTokens = Math.max(1, Math.min(8192, cfg.localModelMaxTokens || 1000));
     const temperature = Number.isFinite(cfg.localModelTemperature) ? cfg.localModelTemperature : 0.2;
     const dataUrl = `data:image/png;base64,${img.base64}`;
-    const auth = cfg.localModelApiKey ? { authorization: `Bearer ${cfg.localModelApiKey}` } : {};
+    // headers 显式声明为 Record<string, string>：条件展开会产出 authorization?: undefined 联合，HeadersInit 不接受。
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (cfg.localModelApiKey) headers.authorization = `Bearer ${cfg.localModelApiKey}`;
 
     const controller = new AbortController();
     const timeoutMs = Math.max(1000, cfg.localModelTimeoutMs || 20000);
@@ -678,7 +685,7 @@ class LocalVisionWorld {
       } else if (protocol === 'openai-responses') {
         res = await fetch(`${base}/responses`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', ...auth },
+          headers,
           body: JSON.stringify({
             model,
             input: [{
@@ -697,7 +704,7 @@ class LocalVisionWorld {
         const path = protocol === 'custom' ? (cfg.localModelPath || '/chat/completions') : '/chat/completions';
         res = await fetch(`${base}${path}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', ...auth },
+          headers,
           body: JSON.stringify({
             model,
             messages: [{
@@ -1303,12 +1310,14 @@ class LocalVisionWorld {
     }
   }
 
-  webUi(lang: string) {
-    const zh = lang !== 'en';
-    this.uiLang = lang;
+  webUi(lang?: string) {
+    // 框架签名是 webUi?(language?: Language)，省略时按中文处理。
+    const language = lang ?? 'zh';
+    const zh = language !== 'en';
+    this.uiLang = language;
     // 组对象是活引用：服务端每次请求都从这里重新序列化（bot.ts allConfigGroups），
     // 所以 syncConfigSummary() 运行时改 schema.description，配置页就能显示当前值。
-    const group = ocrConfigGroup(lang);
+    const group = ocrConfigGroup(language);
     this.uiGroup = group;
     this.syncConfigSummary();
     return {

@@ -8,7 +8,7 @@
  * 返回归一化(0..1)文字框；调用方用截图的 scaledWidth/Height 乘回去，得到与 `pet_cua_*`
  * 完全一致的「截图像素坐标」。
  */
-import { createWorker, type Worker } from 'tesseract.js';
+import { createWorker, PSM, type Worker } from 'tesseract.js';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,8 +96,8 @@ async function getWorker(langs: string, cachePath: string): Promise<Worker> {
     await mkdir(cachePath, { recursive: true });
     const worker = await createWorker(langs, 1, { cachePath });
     // tesseract.js 的 worker 默认 PSM 不是 3（对 UI 截图会切成单块，中文识别明显变差）；
-    // 固定成 3（自动分页），实测同一张图内容准确率最高。
-    await worker.setParameters({ tessedit_pageseg_mode: '3' });
+    // 固定成 PSM.AUTO=3（自动分页），实测同一张图内容准确率最高。
+    await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO });
     return worker;
   })().catch((err) => {
     workerPromise = null;
