@@ -326,72 +326,92 @@ const TOOL_DECLS: readonly ToolDescribe[] = [
 
 /**
  * 配置页分组：只保留截图/OCR 这层（视觉模型的启用、端点、模型名等 12 项不再重复出现，
- * 「模型」面板是唯一编辑入口，经 ctx.persist 直接落盘；本组 description 会被
- * syncConfigSummary() 动态改写成当前视觉模型的只读摘要，配置页每次加载都取最新值）。
+ * 「模型」面板是唯一编辑入口，经 ctx.persist 直接落盘）。
+ *
+ * 拆成两组，让同类项挨在一起（宿主按 schema.properties 的插入顺序渲染，每组自带标题）：
+ * - 「识别（OCR）」：感知优先级、OCR 语言、OCR 兜底方式、硬拦截截图——都是"怎么认字"；
+ * - 「截图尺寸」：截图最大宽/高、默认外扩像素——都是像素值。
+ * 第一组的 description 会被 syncConfigSummary() 动态改写成当前视觉模型的只读摘要，
+ * 配置页每次加载都取最新值。
  */
-function ocrConfigGroup(lang: string): ConfigGroup {
+function ocrConfigGroups(lang: string): ConfigGroup[] {
   const zh = lang !== 'en';
   const K = 'worlds.localvision';
-  return {
-    id: 'world:localvision',
-    owner: 'world:localvision',
-    schema: {
-      type: 'object',
-      title: zh ? '本地视觉 · 配置' : 'Local vision · settings',
-      description: zh ? '视觉模型配置摘要（动态）。' : 'Vision model summary (dynamic).',
-      properties: {
-        [`${K}.visionStrategy`]: {
-          type: 'string',
-          title: zh ? '感知优先级' : 'Perception order',
-          // enum 保留全部旧值（兼容已存的配置），下拉只显示 configOptions 给的 3 项。
-          enum: ['auto', 'ocr-only', 'model-first', 'model-only', 'image-only'],
-          'x-options': 'localvision.visionStrategy',
-          'x-hot': true,
-          description: zh
-            ? '自动模式：OCR>视觉模型>图片上传（默认OCR优先，最省token）。'
-            : 'Auto: OCR > vision model > image upload (OCR first, cheapest).',
-        },
-        [`${K}.ocrLang`]: {
-          type: 'string',
-          title: zh ? 'OCR 语言' : 'OCR language',
-          description: zh ? 'auto（跟随系统语言）/ chi_sim / eng / chi_sim+eng' : 'auto (follow system locale) / chi_sim / eng / chi_sim+eng',
-          'x-hot': true,
-        },
-        [`${K}.screenshotMaxWidth`]: { type: 'integer', title: zh ? '截图最大宽' : 'Max width', minimum: 320, maximum: 3840, 'x-suffix': 'px', 'x-hot': true },
-        [`${K}.screenshotMaxHeight`]: { type: 'integer', title: zh ? '截图最大高' : 'Max height', minimum: 240, maximum: 2160, 'x-suffix': 'px', 'x-hot': true },
-        [`${K}.onOcrEmpty`]: {
-          type: 'string',
-          title: zh ? 'OCR 兜底方式' : 'OCR fallback',
-          enum: ['image', 'text'],
-          'x-options': 'localvision.onOcrEmpty',
-          description: zh
-            ? '图片（默认）：OCR 认不出字时，把截图发给 Coopanion 已配的模型兜底，看得懂游戏、视频等画面（会消耗 token）。\n文本：只返回识别到的文字，不发图、零额外开销。'
-            : 'Image (default): when OCR finds no text, the screenshot is sent to the Coopanion model as a fallback — it can read games, video, etc. (costs tokens).\nText: returns recognized text only; no image is sent and no extra cost.',
-          'x-hot': true,
-        },
-        [`${K}.expandDefault`]: {
-          type: 'integer',
-          title: zh ? '默认外扩像素（expand）' : 'Default expand (px)',
-          minimum: 0,
-          maximum: 1000,
-          'x-suffix': 'px',
-          'x-hot': true,
-          description: zh
-            ? '局部截图（region）没看清时，插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空还会自动再扩一轮重试。0 = 关闭外扩与重试（精确裁剪）。'
-            : 'When a region screenshot finds nothing, the plugin auto-expands the area and retries OCR — no coordinates needed from the model. 0 = disable (exact crop).',
-        },
-        [`${K}.hookIntercept`]: {
-          type: 'boolean',
-          title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
-          description: zh
-            ? '注册核心变换，把内置 cua 的截图换成 OCR 文字；框架没打 hook 时自动降级。关闭即时生效，重新开启需重启 World。'
-            : 'Replace screenshot tool results with OCR text; degrades when the framework has no hook. Turning off applies at once; turning back on needs a World restart.',
-          // hook 在 World 启动时注册（start），没有配置监听：开启需重启 World，所以不是热配置。
-          'x-hot': false,
+  return [
+    {
+      id: 'world:localvision',
+      owner: 'world:localvision',
+      schema: {
+        type: 'object',
+        title: zh ? '本地视觉 · 识别（OCR）' : 'Local vision · recognition (OCR)',
+        description: zh ? '视觉模型配置摘要（动态）。' : 'Vision model summary (dynamic).',
+        properties: {
+          [`${K}.visionStrategy`]: {
+            type: 'string',
+            title: zh ? '感知优先级' : 'Perception order',
+            // enum 保留全部旧值（兼容已存的配置），下拉只显示 configOptions 给的 3 项。
+            enum: ['auto', 'ocr-only', 'model-first', 'model-only', 'image-only'],
+            'x-options': 'localvision.visionStrategy',
+            'x-hot': true,
+            description: zh
+              ? '自动模式：OCR>视觉模型>图片上传（默认OCR优先，最省token）。'
+              : 'Auto: OCR > vision model > image upload (OCR first, cheapest).',
+          },
+          [`${K}.ocrLang`]: {
+            type: 'string',
+            title: zh ? 'OCR 语言' : 'OCR language',
+            description: zh ? 'auto（跟随系统语言）/ chi_sim / eng / chi_sim+eng' : 'auto (follow system locale) / chi_sim / eng / chi_sim+eng',
+            'x-hot': true,
+          },
+          [`${K}.onOcrEmpty`]: {
+            type: 'string',
+            title: zh ? 'OCR 兜底方式' : 'OCR fallback',
+            enum: ['image', 'text'],
+            'x-options': 'localvision.onOcrEmpty',
+            description: zh
+              ? '图片（默认）：OCR 认不出字时，把截图发给 Coopanion 已配的模型兜底，看得懂游戏、视频等画面（会消耗 token）。\n文本：只返回识别到的文字，不发图、零额外开销。'
+              : 'Image (default): when OCR finds no text, the screenshot is sent to the Coopanion model as a fallback — it can read games, video, etc. (costs tokens).\nText: returns recognized text only; no image is sent and no extra cost.',
+            'x-hot': true,
+          },
+          [`${K}.hookIntercept`]: {
+            type: 'boolean',
+            title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
+            description: zh
+              ? '注册核心变换，把内置 cua 的截图换成 OCR 文字；框架没打 hook 时自动降级。关闭即时生效，重新开启需重启 World。'
+              : 'Replace screenshot tool results with OCR text; degrades when the framework has no hook. Turning off applies at once; turning back on needs a World restart.',
+            // hook 在 World 启动时注册（start），没有配置监听：开启需重启 World，所以不是热配置。
+            'x-hot': false,
+          },
         },
       },
     },
-  };
+    {
+      id: 'world:localvision.screenshot',
+      owner: 'world:localvision',
+      schema: {
+        type: 'object',
+        title: zh ? '本地视觉 · 截图尺寸' : 'Local vision · screenshot size',
+        description: zh
+          ? '下面三项都是像素值。截图上限要和内置 cua 的 screenshot.maxWidth/maxHeight 保持一致，坐标才能直接复用；外扩像素是局部截图（region）向外扩展的幅度。'
+          : 'All three are pixel values. Keep the screenshot limits aligned with the built-in cua screenshot.maxWidth/maxHeight so coordinates stay reusable; the expand value is how far a region screenshot grows outward.',
+        properties: {
+          [`${K}.screenshotMaxWidth`]: { type: 'integer', title: zh ? '截图最大宽' : 'Max width', minimum: 320, maximum: 3840, 'x-suffix': 'px', 'x-hot': true },
+          [`${K}.screenshotMaxHeight`]: { type: 'integer', title: zh ? '截图最大高' : 'Max height', minimum: 240, maximum: 2160, 'x-suffix': 'px', 'x-hot': true },
+          [`${K}.expandDefault`]: {
+            type: 'integer',
+            title: zh ? '默认外扩像素（expand）' : 'Default expand (px)',
+            minimum: 0,
+            maximum: 1000,
+            'x-suffix': 'px',
+            'x-hot': true,
+            description: zh
+              ? '局部截图（region）没看清时，插件自动把区域向外扩大再截、无需模型算坐标；OCR 落空还会自动再扩一轮重试。0 = 关闭外扩与重试（精确裁剪）。'
+              : 'When a region screenshot finds nothing, the plugin auto-expands the area and retries OCR — no coordinates needed from the model. 0 = disable (exact crop).',
+          },
+        },
+      },
+    },
+  ];
 }
 
 
@@ -1354,14 +1374,15 @@ class LocalVisionWorld {
     this.uiLang = language;
     // 组对象是活引用：服务端每次请求都从这里重新序列化（bot.ts allConfigGroups），
     // 所以 syncConfigSummary() 运行时改 schema.description，配置页就能显示当前值。
-    const group = ocrConfigGroup(language);
-    this.uiGroup = group;
+    // 分两组：识别（OCR）一组、截图尺寸（像素）一组，宿主每组渲染成一个带标题的分区。
+    const groups = ocrConfigGroups(language);
+    this.uiGroup = groups[0];
     this.syncConfigSummary();
     return {
       label: '本地视觉 LocalVision',
       // 配置页只保留截图/OCR 层；视觉模型在「模型」面板编辑（经 ctx.persist 落盘），
-      // 本组描述是面板写入的只读摘要，用户不用翻页也能看到当前配置。
-      config: [group],
+      // 首组描述是面板写入的只读摘要，用户不用翻页也能看到当前配置。
+      config: groups,
       panels: [
         {
           id: 'model',
