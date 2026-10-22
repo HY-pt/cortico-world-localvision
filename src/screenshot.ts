@@ -20,6 +20,12 @@ import { fitToMax, type CaptureTransform } from './vision-space.ts';
 
 const exec = promisify(execFile);
 
+/**
+ * 本会话（本次进程）自己创建的截屏临时文件。清理「上一轮残留」时必须跳过它们——
+ * World 可能在同一个进程里重载（禁用再启用），误伤在飞的截图会让当次识别直接失败。
+ */
+const ownShots = new Set<string>();
+
 /** 删掉截屏临时文件；失败无所谓（只是 tmp 残留），绝不能影响主流程。 */
 async function cleanupTemp(...paths: string[]): Promise<void> {
   await Promise.all(paths.map((p) => rm(p, { force: true }).catch(() => {})));
@@ -45,6 +51,7 @@ export async function captureScreenshot(opts: CaptureOpts): Promise<CaptureResul
 
 async function captureMac(opts: CaptureOpts): Promise<CaptureResult> {
   const out = join(tmpdir(), `lv-${Date.now()}.png`);
+  ownShots.add(out);
   try {
     // 主屏全尺寸（用于 region 坐标与还原基准）
     const boundsRaw = (
@@ -93,12 +100,15 @@ async function captureMac(opts: CaptureOpts): Promise<CaptureResult> {
     };
   } finally {
     await cleanupTemp(out);
+    ownShots.delete(out);
   }
 }
 
 async function captureWin(opts: CaptureOpts): Promise<CaptureResult> {
   const out = join(tmpdir(), `lv-${Date.now()}.png`);
   const dimFile = join(tmpdir(), `lv-dim-${Date.now()}.json`);
+  ownShots.add(out);
+  ownShots.add(dimFile);
   try {
     const ps = buildWindowsCapturePs(
       out,
@@ -114,28 +124,28 @@ async function captureWin(opts: CaptureOpts): Promise<CaptureResult> {
     return { base64: buf.toString('base64'), ...dim, capturedAt: Date.now() };
   } finally {
     await cleanupTemp(out, dimFile);
+    ownShots.delete(out);
+    ownShots.delete(dimFile);
   }
 }
 
 /**
- * 清理本扩展历史遗留的截屏临时文件：旧版本截图后不删，tmpdir 下会攒一堆
- * （Coopanion 把 TMPDIR 指到 data/tmp，系统重启不会清）。只删 lv- 前缀、
- * 文件名时间戳超过 1 小时的文件，正在进行的截图不受影响。
+ * 清掉「上一轮运行」遗留的截屏临时文件——截图缓存的生命周期就是一次 Coopanion 运行：
+ * 截图都是用完即删的临时文件，跨重启没有保留价值（画面早就变了），而 Coopanion 把
+ * TMPDIR 指到 data/tmp、系统重启不会清，所以每次 World 启动（= Coopanion 启动或
+ * 重载）时把上一轮的残留全部清掉，重启即清空。只删 lv- 前缀、且不属本会话的文件：
+ * 误伤不了别人的临时文件，也误伤不了正在进行的截图。返回删除个数。
  */
-export async function sweepStaleShots(): Promise<void> {
+export async function clearPreviousShots(): Promise<number> {
   let names: string[];
   try {
     names = await readdir(tmpdir());
   } catch {
-    return;
+    return 0;
   }
-  const cutoff = Date.now() - 3600_000;
-  const stale = names.filter((n) => {
-    if (!/^lv-(dim-)?\d{10,}\.(png|json)$/.test(n)) return false;
-    const m = /(\d{10,})/.exec(n);
-    return m ? Number(m[1]) < cutoff : false;
-  });
+  const stale = names.filter((n) => /^lv-(dim-)?\d{10,}\.(png|json)$/.test(n) && !ownShots.has(join(tmpdir(), n)));
   await Promise.all(stale.map((n) => rm(join(tmpdir(), n), { force: true }).catch(() => {})));
+  return stale.length;
 }
 
 /** Windows：DPI 感知截屏 + 可选矩形裁剪 + 等比缩放到上限，并把尺寸写进 dimFile。 */
