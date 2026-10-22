@@ -330,12 +330,51 @@ const TOOL_DECLS: readonly ToolDescribe[] = [
 ];
 
 /**
+ * 实验性功能登记表：配置页「实验性功能」组与诊断面板的错误代码共用这一份。
+ * - code：稳定编号（EXP-01…）。开关说明、诊断面板、运行时报错都写同一个编号，
+ *   用户说「EXP-01 报错」时两边都能对上号，不用猜是哪个功能。
+ * - key：LocalVisionSection 里的布尔开关名。
+ * 新增实验功能只要在这里加一行，配置组与诊断面板自动跟上。
+ */
+const EXPERIMENTAL_FEATURES: readonly {
+  key: 'textAssist';
+  code: string;
+  title: { zh: string; en: string };
+  desc: { zh: string; en: string };
+}[] = [
+  {
+    key: 'textAssist',
+    code: 'EXP-01',
+    title: { zh: '发图时附带本机 OCR 文字', en: 'Attach local OCR text to images' },
+    desc: {
+      zh:
+        '⚠️ 默认关闭：开启后每次发图都会额外多消耗 token，只在必要时打开。\n' +
+        '作用：需要真的发图时（视觉模型看图、或图片兜底交给 Coopanion 模型商），除原始截图外再附一份本机 OCR 的文字与坐标，让模型直接按坐标定位、不必靠读图认字。\n' +
+        '什么时候该开：本地小模型（7B 级别）看图认中文小字容易认错、幻觉严重时。在线大模型（GPT / 豆包 / Qwen-VL 大尺寸）自己读图就够准，开着纯属浪费。\n' +
+        '截图始终原图，不做任何涂改；画面 0 文字时不附加任何内容。',
+      en:
+        '⚠️ Off by default: enabling costs extra tokens on every image sent.\n' +
+        'When an image really has to be sent (vision model or Coopanion fallback), also attach locally OCR’d text with coordinates so the model locates by coordinates instead of reading glyphs.\n' +
+        'Enable only when a small local model misreads tiny text and hallucinates; large online VLMs read images well enough.\n' +
+        'The screenshot is always untouched pixels; nothing is attached when the frame has no text.',
+    },
+  },
+];
+
+/** 按开关名取实验功能登记项（编号 EXP-xx 在报错与诊断里共用）。 */
+function expFeature(key: string): { code: string; title: { zh: string; en: string } } {
+  return EXPERIMENTAL_FEATURES.find((f) => f.key === key) ?? { code: 'EXP-??', title: { zh: key, en: key } };
+}
+
+/**
  * 配置页分组：只保留截图/OCR 这层（视觉模型的启用、端点、模型名等 12 项不再重复出现，
  * 「模型」面板是唯一编辑入口，经 ctx.persist 直接落盘）。
  *
- * 拆成两组，让同类项挨在一起（宿主按 schema.properties 的插入顺序渲染，每组自带标题）：
+ * 拆成三组，让同类项挨在一起（宿主按 schema.properties 的插入顺序渲染，每组自带标题）：
  * - 「识别（OCR）」：感知优先级、OCR 语言、OCR 兜底方式、硬拦截截图——都是"怎么认字"；
- * - 「截图尺寸」：截图最大宽/高、默认外扩像素——都是像素值。
+ * - 「截图尺寸」：截图最大宽/高、默认外扩像素——都是像素值；
+ * - 「实验性功能」：还在调试、可能报错的开关（当前只有 EXP-01 文本辅助），与识别参数分开，
+ *   出问题时用户能整组关掉验证；诊断面板按同一套编号（EXP-xx）回报状态与报错。
  * 第一组的 description 会被 syncConfigSummary() 动态改写成当前视觉模型的只读摘要，
  * 配置页每次加载都取最新值。
  */
@@ -378,18 +417,6 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
               : 'Image (default): when OCR finds no text, the screenshot is sent to the Coopanion model as a fallback — it can read games, video, etc. (costs tokens).\nText: returns recognized text only; no image is sent and no extra cost.',
             'x-hot': true,
           },
-          [`${K}.textAssist`]: {
-            type: 'boolean',
-            title: zh ? '发图时附带本机 OCR 文字' : 'Attach local OCR text to images',
-            description: zh
-              ? '⚠️ 默认关闭：开启后每次发图都会额外多消耗 token，只在必要时打开。\n' +
-                '作用：需要真的发图时（视觉模型看图、或图片兜底交给 Coopanion 模型商），除原始截图外再附一份本机 OCR 的文字与坐标，让模型直接按坐标定位、不必靠读图认字。\n' +
-                '什么时候该开：本地小模型（7B 级别）看图认中文小字容易认错、幻觉严重时。在线大模型（GPT / 豆包 / Qwen-VL 大尺寸）自己读图就够准，开着纯属浪费。截图始终原图，不做任何涂改；画面 0 文字时不附加任何内容。'
-              : '⚠️ Off by default: enabling costs extra tokens on every image sent.\n' +
-                'When an image really has to be sent (vision model or Coopanion fallback), also attach locally OCR’d text with coordinates so the model locates by coordinates instead of reading glyphs.\n' +
-                'Enable only when a small local model misreads tiny text and hallucinates; large online VLMs read images well enough. The screenshot is always untouched pixels; nothing is attached when the frame has no text.',
-            'x-hot': true,
-          },
           [`${K}.hookIntercept`]: {
             type: 'boolean',
             title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
@@ -426,6 +453,30 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
               : 'When a region screenshot finds nothing, the plugin auto-expands the area and retries OCR — no coordinates needed from the model. 0 = disable (exact crop).',
           },
         },
+      },
+    },
+    {
+      id: 'world:localvision.experimental',
+      owner: 'world:localvision',
+      schema: {
+        type: 'object',
+        title: zh ? '本地视觉 · 实验性功能' : 'Local vision · experimental',
+        description: zh
+          ? '⚠️ 这一组的功能还在调试中，可能会报错或行为变化。遇到异常先关掉对应开关，确认是不是它引起的；' +
+            '诊断面板的「实验性功能」区会列出每个开关的状态、编号（EXP-01…）和最近一次报错，两边编号一致。'
+          : '⚠️ Features here are still being debugged and may error or change behavior. If something breaks, turn the matching switch off first; ' +
+            'the diagnostics panel lists each switch, its code (EXP-01…) and the latest error — same codes on both sides.',
+        properties: Object.fromEntries(
+          EXPERIMENTAL_FEATURES.map((f) => [
+            `${K}.${f.key}`,
+            {
+              type: 'boolean',
+              title: zh ? f.title.zh : f.title.en,
+              description: zh ? f.desc.zh : f.desc.en,
+              'x-hot': true,
+            },
+          ]),
+        ),
       },
     },
   ];
@@ -510,6 +561,12 @@ class LocalVisionWorld {
   private ocrCalls = 0;
   private lastOcrMs = 0;
   private lastOcrWords = 0;
+  /**
+   * 实验性功能的最近一次报错：key 是编号（EXP-01…），value 是截断后的原因。
+   * 实验功能一律降级处理（不搞挂主流程），但报错要留痕——诊断面板按同一套编号展示，
+   * 用户才能把「看到的错误」和「配置页里那个开关」对上。
+   */
+  private readonly expErrors = new Map<string, string>();
 
   constructor(private ctx: any) {}
 
@@ -831,8 +888,20 @@ class LocalVisionWorld {
         `认字请以这段文本为准，图片只看图标、控件与排版：\n` +
         `${ocrToLocatedTextMapped(words, map)}\n${this.hint(display, img)}`
       );
-    } catch {
+    } catch (e) {
+      // 实验功能不搞挂主流程：附不上文本就只发原图（原图本就一个像素不改），
+      // 但把原因按 EXP 编号记下来，诊断面板「实验性功能」区会展示，不再是静默吞掉。
+      this.noteExpError(expFeature('textAssist').code, e instanceof Error ? e.message : String(e));
       return '';
+    }
+  }
+
+  /** 记录实验性功能的最近一次报错（编号 EXP-xx），供诊断面板展示；最多留 8 条，先到的先丢。 */
+  private noteExpError(code: string, message: string): void {
+    this.expErrors.set(code, message.slice(0, 200));
+    if (this.expErrors.size > 8) {
+      const oldest = this.expErrors.keys().next();
+      if (!oldest.done) this.expErrors.delete(oldest.value);
     }
   }
 
@@ -968,7 +1037,10 @@ class LocalVisionWorld {
     if (cfg.onOcrEmpty === 'image' && !route.configured)
       tips.push('「OCR 兜底方式」为 图片 但视觉模型未配置：OCR 认不出字时截图会发给 Coopanion 已配的模型（费 token）；不需要请在「配置」页改为 文本');
     if (cfg.textAssist)
-      tips.push('「发图时附带本机 OCR 文字」已开启：每次发图都会多消耗 token，只有本地小模型认字不准时才需要；用在线大模型可以在「配置」页关掉');
+      tips.push(
+        'EXP-01「发图时附带本机 OCR 文字」已开启（实验性功能）：每次发图都会多消耗 token，只有本地小模型认字不准时才需要；' +
+          '用在线大模型可以在「配置」页「实验性功能」组关掉',
+      );
     if (!locale) tips.push('系统语言未知，OCR 语言已回退 eng；可手动填 ocrLang');
     if (tips.length) lines.push(`建议: ${tips.join('；')}`);
 
@@ -1018,6 +1090,28 @@ class LocalVisionWorld {
         ],
       },
     ];
+
+    // 实验性功能：与配置页「实验性功能」组共用编号（EXP-01…）。
+    // 只在有开关被打开、或留下过报错时才展示，避免常态噪音；开关关掉时顺手清掉它的旧报错。
+    const expRows: DoctorRow[] = [];
+    let expAnyOn = false;
+    for (const f of EXPERIMENTAL_FEATURES) {
+      const on = Boolean((this.cfg as unknown as Record<string, unknown>)[f.key]);
+      expAnyOn ||= on;
+      const err = on ? this.expErrors.get(f.code) : undefined;
+      if (!on) this.expErrors.delete(f.code);
+      expRows.push({ label: `${f.code} ${f.title.zh}`, value: on ? '已开启' : '已关闭' });
+      if (err) {
+        expRows.push({ label: `${f.code} 最近报错`, value: err });
+        tips.push(
+          `${f.code}「${f.title.zh}」最近一次报错：${err}——该功能仍在调试，可先在「配置」页「实验性功能」组关掉它验证`,
+        );
+      }
+    }
+    if (expAnyOn || expRows.some((r) => r.label.endsWith('最近报错'))) {
+      sections.push({ title: '实验性功能', rows: expRows });
+      lines.push(`实验性功能: ${expRows.map((r) => `${r.label} ${r.value}`).join('；')}`);
+    }
 
     // 诊断文本脱敏：彻底剔除 API Key 与常见令牌，确保上报/复制出去不含敏感数据。
     const safeText = this.redactSecrets(lines.join('\n'), cfg.localModelApiKey);
@@ -1484,7 +1578,7 @@ class LocalVisionWorld {
     this.uiLang = language;
     // 组对象是活引用：服务端每次请求都从这里重新序列化（bot.ts allConfigGroups），
     // 所以 syncConfigSummary() 运行时改 schema.description，配置页就能显示当前值。
-    // 分两组：识别（OCR）一组、截图尺寸（像素）一组，宿主每组渲染成一个带标题的分区。
+    // 分三组：识别（OCR）、截图尺寸（像素）、实验性功能；宿主每组渲染成一个带标题的分区。
     const groups = ocrConfigGroups(language);
     this.uiGroup = groups[0];
     this.syncConfigSummary();
