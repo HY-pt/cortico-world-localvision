@@ -1432,6 +1432,12 @@ class LocalVisionWorld {
         this.cfg.localModelEnabled && this.cfg.localModelBaseUrl.trim() && this.cfg.localModelName.trim()
           ? '需要理解画面内容（游戏、图片、图表、视频帧）时，用 localvision_describe：视觉模型会描述画面（本地/线上按配置）。识别或模型异常时先调 localvision_doctor。'
           : '视觉模型未配置：本机看不了图，不要尝试获取或描述截图画面（不要调 pet_cua_screenshot / cua_screenshot，截图不会发给云端）。画面类问题直接告知用户「本机暂不支持看图」；如果用户有看图片的需求，引导他去「模型」页（或配置页）打开视觉模型并填好端点与模型名，配好后会自动生效。只依赖 OCR 文字与坐标操作。异常时先调 localvision_doctor。',
+      // 判定与 perceive 的 coopFallback 同一个（onOcrEmpty === 'image'），不另写一套：
+      // 老配置缺字段时两边都落到「文本」分支，提示词与真实行为不会对不上。
+      'localvision.ocrfallback':
+        this.cfg.onOcrEmpty === 'image'
+          ? '当前「OCR 兜底方式」为 图片：OCR 认不出字（游戏、视频、纯画面）时，截图会发给 Coopanion 已配的模型商兜底（消耗 token、画面上传），你能借此描述画面。'
+          : '当前「OCR 兜底方式」为 文本：OCR 认不出字（游戏、视频、纯画面）时只返回已识别的文字，不发图、零额外开销；这种模式下你看不到画面内容。',
     };
   }
 
