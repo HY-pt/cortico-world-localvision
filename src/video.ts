@@ -48,7 +48,18 @@ export interface ExtractResult {
    * 必须暴露出来：静默降级会让「select 表达式语法错」看起来像「画面没变化」，极难排查。
    */
   sceneError?: string;
+  /** 场景检测实际选出的帧数（回退时用于说明：是「没变化」还是「变化太少」）。 */
+  sceneFrames?: number;
 }
+
+/**
+ * 场景检测至少选出这么多帧才算「覆盖住了」。
+ *
+ * 动画 / 游戏 CG / 实拍录像大多是连续平缓变化，单帧间 scene score 很低：
+ * 实测一段 67 秒的崩坏3 CG 在 scene>0.3 下只选出 2 帧，时间线几乎等于没有内容。
+ * 这种素材改用均匀抽帧更有用——宁可多 OCR 几帧，也不要让整段看起来「什么都没发生」。
+ */
+const MIN_SCENE_FRAMES = 3;
 
 export interface ExtractOptions {
   /** 场景变化阈值 0–1，越小越敏感（抽到的帧越多）。 */
@@ -250,8 +261,10 @@ export async function extractFrames(file: string, dir: string, opts: ExtractOpti
     frames = frames.map((f, i) => ({ ...f, timeSec: sceneTimes[i] ?? null }));
   }
 
-  // 2) 回退：画面几乎不变（静态演示、文档录制）时 scene 检测会选出 0 帧，改按固定间隔抽。
-  if (!frames.length) {
+  // 2) 回退：选出 0 帧（画面几乎不变），或只选出零星几帧（动画 / CG 这类平缓变化的素材），
+  //    都改按固定间隔抽——零星几帧拼出来的时间线覆盖不住整段，还不如均匀采样。
+  const picked = frames.length;
+  if (picked < MIN_SCENE_FRAMES) {
     await clearDir(dir);
     const interval = runFfmpeg(file, dir, [`fps=1/${Math.max(0.1, opts.intervalSec)}`, scaleFilter(opts.maxWidth)].join(','), seekArgs(opts.fromSec, opts.toSec), timeout);
     const base = typeof opts.fromSec === 'number' && opts.fromSec > 0 ? opts.fromSec : 0;
@@ -259,7 +272,7 @@ export async function extractFrames(file: string, dir: string, opts: ExtractOpti
     frames = await thin(frames, opts.maxFrames, dir);
     // ffmpeg 真的报错（而不是画面没变化）时把原因带上，别让上层把「语法错」当成「无变化」。
     const err = scene.ok ? '' : lastErrorLine(scene.log);
-    return { frames, mode: 'interval', log: interval.log, ...(err ? { sceneError: err } : {}) };
+    return { frames, mode: 'interval', log: interval.log, sceneFrames: picked, ...(err ? { sceneError: err } : {}) };
   }
 
   frames = await thin(frames, opts.maxFrames, dir);

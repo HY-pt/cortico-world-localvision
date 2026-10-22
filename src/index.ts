@@ -1358,10 +1358,12 @@ class LocalVisionWorld {
 
       const dur = meta.durationSec !== null ? `时长 ${clock(meta.durationSec)}` : '时长未知';
       const size = meta.width && meta.height ? `${meta.width}×${meta.height}` : '分辨率未知';
+      // 回退时要说清是「画面没变化」还是「变化太平缓、只挑出零星几帧」——后者是动画 / CG 的常态。
+      const few = (res.sceneFrames ?? 0) > 0;
       const modeText =
         res.mode === 'scene'
           ? `场景变化检测（scene>${scene.toFixed(2)}）`
-          : `固定间隔抽帧（每 ${intervalSec}s；画面几乎无变化，已自动切换策略）`;
+          : `固定间隔抽帧（每 ${intervalSec}s；${few ? `场景检测只找到 ${res.sceneFrames} 处明显切换，画面变化平缓` : '画面几乎无变化'}，已自动切换策略）`;
       const head =
         `[localvision_watch] ${basename(file)} · ${dur} · ${size} → 抽帧宽 ${this.cfg.screenshotMaxWidth}\n` +
         `策略：${modeText}；抽出 ${res.frames.length} 帧并全部 OCR，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s` +
