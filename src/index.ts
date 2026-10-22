@@ -1661,7 +1661,7 @@ class LocalVisionWorld {
       'localvision.localmodel':
         this.cfg.localModelEnabled && this.cfg.localModelBaseUrl.trim() && this.cfg.localModelName.trim()
           ? '想看懂画面内容（游戏、图片、图表、视频里某一幕），用 localvision_describe，它会让配好的视觉模型把画面讲给你听。出问题先调 localvision_doctor。'
-          : '还没配视觉模型，所以现在看不了图。别去调 pet_cua_screenshot / cua_screenshot（截图也不会传到云端，调了也白调）；遇到画面类问题就老实告诉用户「现在还看不了图」，想看图请他去「模型」页打开视觉模型、填好地址和模型名，配好自动生效。平时只靠读出来的文字和坐标干活。有问题先调 localvision_doctor。',
+          : '还没配视觉模型，所以现在看不了画面内容。在此之前不要调用 pet_cua_screenshot / cua_screenshot：拿到的图你也读不懂，只会白白消耗 token；要是没开硬拦截，截图还会真的传到云端。遇到画面类问题，如实告诉用户「现在还看不了图」；想看图的话引导他去「模型」页打开视觉模型、填好地址和模型名，配好自动生效。平时只靠读出来的文字和坐标干活。有问题先调 localvision_doctor。',
       // 判定与 perceive 的 coopFallback 同一个（onOcrEmpty === 'image'），不另写一套：
       // 老配置缺字段时两边都落到「文本」分支，提示词与真实行为不会对不上。
       'localvision.ocrfallback':
