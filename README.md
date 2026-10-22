@@ -202,7 +202,6 @@ npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动
 ## 0.3.3（已发布）
 
 - **回退扩展契约到 `api 6`**：0.3.2 为兼容旧版 Coopanion 把契约降到 `api 5`，市场会提示「下一大版本不再加载」。现回到 `api 6`（当前框架契约），该提示消失；代价是低于当前契约版本的旧版 Coopanion 将不再加载本扩展。
-- **（待清理）npm 上的 `0.0.0-stage` 占位版本**：那是个没有 `type` / `cortico` 块的空壳包，会在市场版本列表里触发「需要 type: module / 缺少 cortico 块」红字。本次发包用的 bypass-2fa 一次性 token 无权执行 `unpublish`，需改用带 unpublish 权限的 token，或在 npm 网页端（发布后 72 小时内）手动删除。
 
 ---
 
