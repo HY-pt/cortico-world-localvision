@@ -542,12 +542,6 @@ const localVisionDef = {
   create: (ctx: any) => new LocalVisionWorld(ctx),
 } satisfies WorldDefinition<LocalVisionSection>;
 
-// api-5 兼容：上一版契约用 `console()` 取 WebUI（当前 host 走 previous-contract 迁移识别 `webUi`）。
-// 两方法并存：当前 host 调 webUi，更老的 api-5 host 调 console，均回退到同一实现。
-(localVisionDef as unknown as Record<string, unknown>).console = function (this: unknown, lang?: string) {
-  return (localVisionDef as unknown as { webUi?: (l?: string) => unknown }).webUi?.(lang);
-};
-
 export default localVisionDef;
 
 class LocalVisionWorld {
