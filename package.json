@@ -6,7 +6,8 @@
   "description": "在本机把屏幕 OCR 成「文字 + 坐标」，默认不把截图发到云端，省掉每帧看屏的 token；可选接视觉模型，也可硬拦截内置截图。",
   "author": "HY-pt",
   "keywords": [
-    "cortico-world"
+    "cortico-world",
+    "cortico"
   ],
   "license": "MIT",
   "engines": {
@@ -22,6 +23,7 @@
   },
   "files": [
     "src",
+    "assets",
     "dist",
     "scripts",
     "patches",
@@ -39,6 +41,7 @@
     "kind": "world",
     "api": 6,
     "displayName": "本地视觉 LocalVision",
+    "icon": "assets/icon.png",
     "describe": "describe.json",
     "webUiClient": "dist/webui.js",
     "webUiStyle": "dist/webui.css",
