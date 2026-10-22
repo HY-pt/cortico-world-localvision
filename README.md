@@ -16,7 +16,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 2. 搜索「本地视觉 LocalVision」，点击 **安装**。
 3. 打开 **World 总览**，启用「本地视觉 LocalVision」（新 World 默认待命）。
 4. **习惯 → 电脑操作**：确认「使用电脑」「允许操作鼠标和键盘」已打开（内置 cua 的开关）。
-5. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`。
+5. 强烈建议：把内置 cua 的「操作后附截图」关掉，否则每次动作后仍会传一张图——高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`（诊断面板会检查这项，忘了关会提醒）。
 
 装好后，对话里说「看一眼屏幕」，模型应当返回文字 + 坐标，而不是 `pet_cua_screenshot` 传图。
 
@@ -172,7 +172,7 @@ Coopanion 的 World 扩展：在本机把屏幕 OCR 成「文字 + 坐标」再�
 
 - **装了但 World 总览没有？** 先重启进程；扩展页显示「待重启」就是还没载入。重启后在 World 总览手动启用。
 - **OCR 识别 0 个字？** 首次使用需下载语言数据：确认网络可用、`localvision-tessdata/` 可写；中文界面把 `ocrLang` 设为 `chi_sim`。
-- **模型还是调 `pet_cua_screenshot` 传图？** 软约束是两层：环境提示词要求「看屏只用 localvision_see」+ 关掉 cua 的 `afterAction`。要硬拦截用 `npm run patch:hook` 打上核心 hook。
+- **模型还是调 `pet_cua_screenshot` 传图？** 软约束是两层：环境提示词要求「看屏只用 localvision_see」+ 关掉 cua 的 `afterAction`。要硬拦截用 `npm run patch:hook` 打上核心 hook。诊断面板会读全局配置，显示内置 cua「操作后截图」的开关状态，开着时给出关闭建议（高级配置里把 `worlds.desktop-pet.cua.screenshot.afterAction` 设为 `false`）。
 - **坐标点偏了？** 确认 `screenshotMaxWidth/Height` 与内置 cua 一致，且 `localvision_see` 和 `pet_cua_*` 看的是同一个 `display`。
 - **卡巴斯基报毒？** 不启动 PowerShell、不落 exe，只跑 WASM；仍被拦就把 `localvision-tessdata/` 与 Node 进程加白名单。
 </details>
@@ -257,6 +257,7 @@ npm run patch:hook             # 一键给宿主打核心 hook（幂等、自动
 - **诊断面板「运行环境」新增「模型」行**：一眼看清当前**实际**由谁看图——本地模型 ✓ / 在线模型 ✓ / 其余情况显示 Coopanion 模型商 ✓。判定标准是「真的会不会被调用」：在线端点没填 API Key（请求必然 401）时如实显示 Coopanion 模型商并提示去补 Key，不会谎报「在线模型 ✓」。
 - **设备压力负载进度条改为按实际使用场景测量**：0.3.0 起面板就有 CPU / 内存两条进度条；现在本地模型用户点「运行诊断」时，会按当前设置实测**一次截图尝试**期间的 CPU 压力与内存占用（绿 < 60% / 黄 60–85% / 红 ≥ 85%），入门显卡跑本地视觉模型时压力会直接顶到红区；使用在线模型或 Coopanion 模型商时推理不在本机，负载直接显示 0%。
 - **配置页按同类分组**：拆成「本地视觉 · 识别（OCR）」（感知优先级 / OCR 语言 / OCR 兜底方式 / 硬拦截截图）、「本地视觉 · 截图尺寸」（截图最大宽 / 截图最大高 / 默认外扩像素）与「本地视觉 · 实验性功能」（发图时附带本机 OCR 文字），像素类不再与 OCR 项混排；最后一组专放仍在调试、可能报错的功能，组说明里写清「出问题先关开关验证」，诊断面板按同一套编号（EXP-01…）回报状态与最近一次报错。
+- **诊断面板「运行环境」新增「内置 cua 操作后截图」行**：读全局配置观察内置 cua 的「操作后附截图」开关（`worlds.desktop-pet.cua.screenshot.afterAction`，桌面宠默认开着）。开着时给出去高级配置关掉它的建议——没打硬拦截时说明「每次动作后都会向模型传一张图」，硬拦截生效时说明「截图会被转成文字，但仍会多一次本地截图」；已关或没启用 cua 时不显示、不给建议。
 - **「OCR 兜底方式」更名、说明重写并默认改为图片**：原「OCR 无文字时」更名为「OCR 兜底方式」，两行说明对齐重写；默认值由 `文本` 改为 `图片`——只有 OCR 认不出字（游戏、视频等纯画面）时才把截图发给 Coopanion 已配的模型，文字场景照旧零开销，桌宠开箱即可"看懂"画面；不想发图的用户可改回 `文本`。已保存过配置的老用户不受影响（保持原值）。
 - **低配机 / 性能调优指引**：README 新增折叠块，给出 7 条缓解方案（OCR-only、降分辨率、降 maxTokens、模型常驻、确认 GPU、换小模型、detail=low），按收益从大到小排序。
 - **环境提示词新增卡顿应对指引**：用户反馈「识别慢 / 卡顿」时，桌宠能建议更换更好的设备，或调低分辨率 / maxTokens / detail 等参数。

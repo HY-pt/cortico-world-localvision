@@ -18,6 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, cpus, totalmem, freemem } from 'node:os';
@@ -621,6 +622,36 @@ class LocalVisionWorld {
   }
 
   /**
+   * 读部署目录下的全局 config.json：用于观察别的 World（内置 cua）的配置。
+   * WorldContext 只给自己 World 的配置段，别家的段只能从这里看；读不到返回 null。
+   */
+  private globalConfig(): Record<string, unknown> | null {
+    const botDir = typeof this.ctx?.botDir === 'string' ? this.ctx.botDir : '';
+    if (!botDir) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(join(botDir, 'config.json'), 'utf8'));
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 内置 cua（desktop-pet）的「操作后附截图」是否开着。
+   * true=开着（每次动作后都会附一张图）；false=已关；null=观察不到（没启用 cua 或读不到配置）。
+   * 桌面宠默认值是 true，而框架只持久化非默认项——所以字段缺失也按开着算。
+   */
+  private cuaAfterAction(): boolean | null {
+    const conf = this.globalConfig();
+    const worlds = conf?.worlds as Record<string, { enabled?: unknown; cua?: unknown }> | undefined;
+    const dp = worlds?.['desktop-pet'];
+    if (!dp || dp.enabled === false) return null;
+    const cua = dp.cua as { enabled?: unknown; screenshot?: { afterAction?: unknown } } | undefined;
+    if (!cua || typeof cua !== 'object' || cua.enabled === false) return null;
+    return cua.screenshot?.afterAction !== false;
+  }
+
+  /**
    * 核心 hook：工具回执落库前把截图换成 OCR 文字。
    * 只处理「截图特征」的图片，或明确列进 hookTools 的工具返回的图片；生成图/用户图原样保留。
    */
@@ -993,6 +1024,12 @@ class LocalVisionWorld {
     const hook = this.unregisterHook ? '已注册（核心 hook 生效）' : '未注册（框架没打 hook 或 hookIntercept=false）';
     lines.push(`硬拦截: ${hook}`);
 
+    // 内置 cua 的「操作后附截图」：它开着的话，每次动作工具执行完都会再附一张图。
+    // 这是桌面宠自己配置段里的开关（我们写不进别人的命名空间），只能观察 + 建议。
+    const afterAction = this.cuaAfterAction();
+    const afterActionText = afterAction === null ? '(未启用 cua 或读不到配置)' : afterAction ? '开着' : '已关';
+    lines.push(`内置 cua 操作后截图: ${afterActionText}`);
+
     // 完全遮罩 API Key：不在诊断里泄露任何字符（含前缀），由 redactSecrets 兜底二次清理。
     const maskedKey = cfg.localModelApiKey ? '已填' : '未填';
     let endpointCheck: string | null = null;
@@ -1021,6 +1058,13 @@ class LocalVisionWorld {
     const tips: string[] = [];
     if (!cachedLangs.includes(resolved)) tips.push(`语言包 ${resolved} 还没缓存，首次 OCR 会下载`);
     if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
+    if (afterAction === true) {
+      tips.push(
+        this.unregisterHook
+          ? '内置 cua 的「操作后截图」还开着：截图虽会被硬拦截转成文字，每次动作仍会多一次本地截图——建议在高级配置把 worlds.desktop-pet.cua.screenshot.afterAction 设为 false'
+          : '内置 cua 的「操作后截图」还开着：每次动作后都会向模型传一张图——建议在高级配置把 worlds.desktop-pet.cua.screenshot.afterAction 设为 false',
+      );
+    }
     if (route.blockedBy === 'missing-endpoint') tips.push('视觉模型已启用但缺地址/模型名：请到「模型」页补全');
     if (route.blockedBy === 'missing-key')
       tips.push('视觉模型已启用，但在线端点没填 API Key：看图请求会降级交给 Coopanion 模型商（费 token）；请到「模型」页填 Key，或改用本地模型');
@@ -1073,6 +1117,7 @@ class LocalVisionWorld {
           { label: '系统语言', value: locale || '(未知)' },
           { label: '屏幕', value: screen },
           { label: '硬拦截', value: hook },
+          { label: '内置 cua 操作后截图', value: afterActionText },
           { label: '模型', value: modelBadge },
         ],
       },
