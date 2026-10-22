@@ -348,15 +348,12 @@ const EXPERIMENTAL_FEATURES: readonly {
     title: { zh: '发图时附带本机 OCR 文字', en: 'Attach local OCR text to images' },
     desc: {
       zh:
-        '⚠️ 默认关闭：开启后每次发图都会额外多消耗 token，只在必要时打开。\n' +
-        '作用：需要真的发图时（视觉模型看图、或图片兜底交给 Coopanion 模型商），除原始截图外再附一份本机 OCR 的文字与坐标，让模型直接按坐标定位、不必靠读图认字。\n' +
-        '什么时候该开：本地小模型（7B 级别）看图认中文小字容易认错、幻觉严重时。在线大模型（GPT / 豆包 / Qwen-VL 大尺寸）自己读图就够准，开着纯属浪费。\n' +
-        '截图始终原图，不做任何涂改；画面 0 文字时不附加任何内容。',
+        '⚠️ 默认关闭，开启后每次发图都会多消耗 token。真的需要发图时，除原始截图外再附一份本机 OCR 的文字与坐标，' +
+        '让模型按坐标定位、不必靠读图认字；仅本地小模型（7B 级）认字不准时才值得开。截图始终原图，不做任何涂改。',
       en:
-        '⚠️ Off by default: enabling costs extra tokens on every image sent.\n' +
-        'When an image really has to be sent (vision model or Coopanion fallback), also attach locally OCR’d text with coordinates so the model locates by coordinates instead of reading glyphs.\n' +
-        'Enable only when a small local model misreads tiny text and hallucinates; large online VLMs read images well enough.\n' +
-        'The screenshot is always untouched pixels; nothing is attached when the frame has no text.',
+        '⚠️ Off by default; enabling costs extra tokens on every image sent. Also attach locally OCR’d text with coordinates ' +
+        'so the model locates by coordinates instead of reading glyphs — worth it only when a small local model (7B-class) misreads text. ' +
+        'The screenshot is always untouched pixels.',
     },
   },
 ];
@@ -462,10 +459,8 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
         type: 'object',
         title: zh ? '本地视觉 · 实验性功能' : 'Local vision · experimental',
         description: zh
-          ? '⚠️ 这一组的功能还在调试中，可能会报错或行为变化。遇到异常先关掉对应开关，确认是不是它引起的；' +
-            '诊断面板的「实验性功能」区会列出每个开关的状态、编号（EXP-01…）和最近一次报错，两边编号一致。'
-          : '⚠️ Features here are still being debugged and may error or change behavior. If something breaks, turn the matching switch off first; ' +
-            'the diagnostics panel lists each switch, its code (EXP-01…) and the latest error — same codes on both sides.',
+          ? '⚠️ 这一组的功能还在调试中，可能会报错或行为变化。遇到异常先关掉对应开关，确认是不是它引起的。'
+          : '⚠️ Features here are still being debugged and may error or change behavior. If something breaks, turn the matching switch off first to confirm.',
         properties: Object.fromEntries(
           EXPERIMENTAL_FEATURES.map((f) => [
             `${K}.${f.key}`,
