@@ -367,7 +367,9 @@ const TOOL_DECLS: readonly ToolDescribe[] = [
       '看视频 / 录屏：在本机用 ffmpeg 抽出「画面有变化」的帧，逐帧跑本机 OCR，产出「时刻 → 画面文字」的时间线文本。' +
       '默认只返回文字、不上传任何图片（省 token）；attachImages=true 时才额外附上「OCR 没读出文字」的纯画面帧（游戏、动画、演示画面等），最多 3 张。' +
       '适合回答「这段录屏里发生了什么」「第几分钟出现了什么文字」；需要系统装有 ffmpeg（没有会直接报安装指引）。' +
-      '不适合：高速连续动作（抽帧会漏细节）、纯语音内容（不转写音频）。注意 OCR 一帧约 1.8s，帧数直接决定耗时。',
+      '不适合：高速连续动作（抽帧会漏细节）、纯语音内容（不转写音频）。注意 OCR 一帧约 1.8s，帧数直接决定耗时。' +
+      '⚠️ OCR 只认印刷体文字，在 CG / 动画 / 游戏画面上常常读不出、甚至读出乱字——这是能力边界不是故障；' +
+      '这类内容想「看懂画面」请直接传 attachImages:true 让模型看图，别拿时间线上的几行乱字猜剧情。',
     parameters: {
       type: 'object',
       properties: {
@@ -1374,13 +1376,16 @@ class LocalVisionWorld {
       const tail: string[] = [];
       // 场景检测是 ffmpeg 报错（而非画面没变化）时如实说明，别让用户以为视频真的没变化。
       if (res.sceneError) tail.push(`场景变化检测不可用（${res.sceneError}），已自动改用固定间隔抽帧`);
-      if (blankCount && !wantImages) {
-        tail.push(`${blankCount} 帧没有文字（多为纯画面）；要看画面内容请传 attachImages:true（最多附 3 张，会消耗 token）`);
-      } else if (blankCount && wantImages && !this.acceptsImage) {
-        tail.push(`${blankCount} 帧没有文字，但当前对话模型不接收图片，无法附图`);
-      }
       if (rows.length && rows.every((r) => !r.text)) {
         tail.push('整段都没有读出文字：可能是纯画面内容（游戏 / 视频），或 OCR 语言不匹配——可到配置页改 ocrLang，或传 attachImages:true 发图给模型看');
+      } else if (blankCount && wantImages && !this.acceptsImage) {
+        tail.push(`${blankCount}/${shots.length} 帧没有文字，但当前对话模型不接收图片，无法附图`);
+      } else if (blankCount && !wantImages) {
+        // 明说是「OCR 认不出画面」而不是「这段没内容」：CG / 动画里乱猜剧情比老实说看不懂更糟。
+        tail.push(
+          `${blankCount}/${shots.length} 帧没有文字。CG / 动画 / 游戏录像的画面内容 OCR 本来就认不出（偶尔还会读出乱字），` +
+            '这是能力边界不是故障；想看懂画面请传 attachImages:true（最多附 3 张原图，会消耗 token）',
+        );
       }
       if (fromSec !== undefined || toSec !== undefined) {
         tail.push(`已限定片段：${fromSec ?? 0}s → ${toSec ?? '末尾'}`);
