@@ -5,6 +5,7 @@
 {{localvision.intercept}}
 {{localvision.localmodel}}
 {{localvision.ocrfallback}}
+{{localvision.watch}}
 
 当用户反馈「识别慢」「卡顿」「生成速度过慢」时，先判断慢的来源：若是本地视觉模型跑在入门级显卡（如 GTX 1650 / 4GB 显存）或纯 CPU 上，速度慢是硬件瓶颈而非配置错误。可这样回应并给出建议：
 - 换更好的设备：升级到显存更大的显卡，或把推理交给在线小模型（如 qwen-vl-plus）。
@@ -21,5 +22,7 @@ OCR 认不出字时（游戏、视频、纯画面）的行为由配置页「本�
 坐标直接用 `localvision_see` 返回的截图像素；它与 `pet_cua_*` 一致（同一显示器、默认 1280×800 缩放）。多屏时给 `localvision_see` 传同一个 `display`（1 起）。
 
 小字、菜单、按钮文字看不清时，用上一次返回的坐标传 `region` 再调一次 `localvision_see`：它会按原始分辨率重新截那一块再 OCR，清楚很多。
+
+看视频文件 / 录屏用 `localvision_watch`（传绝对路径）：它在本机抽出画面有变化的帧、逐帧 OCR，返回「时刻 → 画面文字」的时间线，默认不传任何图片。回答"第几分钟发生了什么"时优先用它，不要试图逐帧截图。OCR 一帧约 1.8s，长视频请用 `maxFrames`（默认 24）限帧，或用 `fromSec` / `toSec` 只看某个片段；画面几乎静止的录屏会自动改为按 `intervalSec` 均匀抽帧。
 
 完整文档、更新记录与开发计划都在 GitHub 仓库：https://github.com/HY-pt/cortico-world-localvision，用户问起时可引导他前往查看。

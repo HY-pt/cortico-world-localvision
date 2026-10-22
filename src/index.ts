@@ -18,9 +18,9 @@
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFile, readdir } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { tmpdir, cpus, totalmem, freemem } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { WorldDefinition } from 'cortico/world.ts';
@@ -39,6 +39,14 @@ import {
   type OcrOptions,
   type OcrWord,
 } from './ocr.ts';
+import {
+  extractFrames,
+  ffmpegAvailable,
+  ffmpegInstallHint,
+  makeFrameDir,
+  probeVideo,
+  removeFrameDir,
+} from './video.ts';
 
 /** 核心 hook 的签名（老版本 cortico 类型里没有，运行时做能力检测）。 */
 type OutcomeTransform = (out: ToolOutcome, info: { tool: string; world?: string }) => ToolOutcome | Promise<ToolOutcome>;
@@ -87,6 +95,31 @@ export interface LocalVisionSection {
   expandDefault: number;
   /** 优先用哪个模型看图：auto（本地>在线>Coopanion 兜底）/ local / online / coop。 */
   localModelPriority: 'auto' | 'local' | 'online' | 'coop';
+}
+
+/** 取数字型工具参数：非数字/NaN 时回退默认值（模型传错类型不该让整个工具失败）。 */
+function numOr(v: unknown, dflt: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : dflt;
+}
+
+/** 把数值夹到区间内。 */
+function clampNum(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+/**
+ * 秒 → 时间码：不足 1 小时 `mm:ss`，否则 `h:mm:ss`；null（时刻未知）返回 `??:??`。
+ * 视频时间线里必须能一眼读出「第几分钟」，纯秒数对模型和用户都不友好。
+ */
+function clock(sec: number | null): string {
+  if (sec === null || !Number.isFinite(sec) || sec < 0) return '??:??';
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const mm = String(m).padStart(h ? 2 : 2, '0');
+  const str = `${mm}:${String(ss).padStart(2, '0')}`;
+  return h ? `${h}:${str}` : str;
 }
 
 /** 1 起的 display -> 0 起的 monitor；非法值返回 null 由调用方报错。 */
@@ -328,6 +361,47 @@ const TOOL_DECLS: readonly ToolDescribe[] = [
     },
     tags: ['read'],
   },
+  {
+    name: 'localvision_watch',
+    description:
+      '看视频 / 录屏：在本机用 ffmpeg 抽出「画面有变化」的帧，逐帧跑本机 OCR，产出「时刻 → 画面文字」的时间线文本。' +
+      '默认只返回文字、不上传任何图片（省 token）；attachImages=true 时才额外附上「OCR 没读出文字」的纯画面帧（游戏、动画、演示画面等），最多 3 张。' +
+      '适合回答「这段录屏里发生了什么」「第几分钟出现了什么文字」；需要系统装有 ffmpeg（没有会直接报安装指引）。' +
+      '不适合：高速连续动作（抽帧会漏细节）、纯语音内容（不转写音频）。注意 OCR 一帧约 1.8s，帧数直接决定耗时。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '视频文件的绝对路径（mp4 / mkv / webm / mov 等 ffmpeg 能解的都行）。' },
+        scene: {
+          type: 'number',
+          minimum: 0.05,
+          maximum: 1,
+          description: '场景变化阈值，默认 0.3。越小越敏感、抽到的帧越多；画面切换快的录屏建议 0.15~0.25，画面几乎静止的建议调大。',
+        },
+        maxFrames: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 120,
+          description: '最多 OCR 多少帧，默认 24。OCR 一帧约 1.8s，这个数直接决定本次调用耗时；超出时按时间均匀抽稀（保留首尾帧）。',
+        },
+        intervalSec: {
+          type: 'number',
+          minimum: 0.1,
+          maximum: 60,
+          description: '兜底抽帧间隔（秒），默认 1。画面几乎不变的静态录屏（PPT 讲解、文档演示）用场景检测会一帧都选不出，此时自动改为按这个间隔均匀抽帧。',
+        },
+        fromSec: { type: 'number', minimum: 0, description: '只看从这一秒起的片段（秒，可带小数）；省略从头。' },
+        toSec: { type: 'number', minimum: 0, description: '只看到这一秒为止（秒，可带小数）；省略到尾。' },
+        attachImages: {
+          type: 'boolean',
+          description:
+            '默认 false（只返回时间线文字，零图片开销）。设为 true 时，额外附上「OCR 没读出文字」的帧原图（纯画面，值得让模型看图），最多 3 张；会消耗 token。',
+        },
+      },
+      required: ['path'],
+    },
+    tags: ['read'],
+  },
 ];
 
 /**
@@ -565,6 +639,8 @@ class LocalVisionWorld {
    * 用户才能把「看到的错误」和「配置页里那个开关」对上。
    */
   private readonly expErrors = new Map<string, string>();
+  /** ffmpeg 是否可用：结果缓存，envPrompt 每次渲染都会问，不能每次都 spawn 一次进程。 */
+  private ffmpegOk: boolean | null = null;
 
   constructor(private ctx: any) {}
 
@@ -1183,6 +1259,150 @@ class LocalVisionWorld {
     return { text: d.text };
   }
 
+  /** ffmpeg 是否可用（结果缓存）。 */
+  private ffmpegReady(): boolean {
+    if (this.ffmpegOk === null) this.ffmpegOk = ffmpegAvailable();
+    return this.ffmpegOk;
+  }
+
+  /**
+   * 看视频 / 录屏：抽「有变化的帧」→ 逐帧本机 OCR → 产出「时刻 → 画面文字」时间线。
+   *
+   * 与看屏同一套哲学：默认只回文字、不发图（零图片 token）。只有「OCR 一个字都没读出来」的
+   * 帧才可能是纯画面（游戏 / 动画 / 演示），且要显式 attachImages 才附原图——
+   * 能读成文字的内容绝不浪费一张图。截图/帧一个像素都不改（见设计红线）。
+   */
+  private async watch(args: Record<string, unknown>): Promise<ToolOutcome> {
+    const file = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!file) return { text: '[localvision_watch] 缺少 path：要传视频文件的绝对路径。', failed: true };
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      return { text: `[localvision_watch] 找不到文件（或它不是文件）：${file}`, failed: true };
+    }
+    if (!this.ffmpegReady()) {
+      return { text: `[localvision_watch] 本机没装 ffmpeg，看不了视频。${ffmpegInstallHint()}`, failed: true };
+    }
+
+    const scene = clampNum(numOr(args.scene, 0.3), 0.05, 1);
+    const maxFrames = Math.round(clampNum(numOr(args.maxFrames, 24), 1, 120));
+    const intervalSec = clampNum(numOr(args.intervalSec, 1), 0.1, 60);
+    const fromSec = typeof args.fromSec === 'number' && Number.isFinite(args.fromSec) && args.fromSec > 0 ? args.fromSec : undefined;
+    const toSec = typeof args.toSec === 'number' && Number.isFinite(args.toSec) && args.toSec > 0 ? args.toSec : undefined;
+    const wantImages = args.attachImages === true;
+    /** 附图的硬上限：再多就是烧 token，且模型一次也消化不了几张。 */
+    const MAX_IMAGES = 3;
+
+    const t0 = Date.now();
+    const dir = await makeFrameDir('watch');
+    try {
+      const meta = probeVideo(file);
+      const res = await extractFrames(file, dir, {
+        scene,
+        intervalSec,
+        maxFrames,
+        fromSec,
+        toSec,
+        maxWidth: this.cfg.screenshotMaxWidth,
+      });
+      if (!res.frames.length) {
+        return {
+          text:
+            `[localvision_watch] 没抽到任何帧：文件可能没有视频轨、已损坏，或指定片段（${fromSec ?? 0}s–${toSec ?? '末尾'}）内没有内容。\n` +
+            `ffmpeg 输出：${res.log.slice(-300)}`,
+          failed: true,
+        };
+      }
+
+      // 逐帧 OCR。单帧失败不搞挂整次调用，只记数——一帧的问题不该让整条时间线报废。
+      const shots: { t: number | null; text: string }[] = [];
+      const blanks: { t: number | null; bytes: Uint8Array }[] = [];
+      let ocrFailed = 0;
+      for (const f of res.frames) {
+        const bytes = await readFile(f.path);
+        const dims = imageSize(bytes);
+        let words: OcrWord[] = [];
+        try {
+          words = await this.runOcr(bytes.toString('base64'), {
+            lang: this.cfg.ocrLang || undefined,
+            cacheDir: this.cacheDir,
+            width: dims?.w ?? 0,
+            height: dims?.h ?? 0,
+          });
+        } catch {
+          ocrFailed += 1;
+        }
+        const text = words.length ? ocrToText(words) : '';
+        shots.push({ t: f.timeSec, text });
+        // 无文字的帧才是「纯画面」，只有它值得发图（且必须用户显式要）。
+        if (!text && wantImages && this.acceptsImage && blanks.length < MAX_IMAGES) blanks.push({ t: f.timeSec, bytes });
+      }
+
+      // 相邻帧文字相同 → 合并成区间（同一屏停留了多久，比重复十行同样的字有用得多）。
+      const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const rows: { from: number | null; to: number | null; text: string }[] = [];
+      for (const s of shots) {
+        const last = rows[rows.length - 1];
+        if (last && norm(last.text) === norm(s.text) && norm(s.text) !== '') {
+          last.to = s.t;
+          continue;
+        }
+        rows.push({ from: s.t, to: s.t, text: s.text });
+      }
+
+      // 单帧文字可能很长（整屏文字），截断保证时间线可读、不会一次灌进几千字。
+      const clip = (s: string) => (s.length > 240 ? `${s.slice(0, 240)}…` : s);
+      const lines = rows.map((r) => {
+        const range =
+          r.from !== null && r.to !== null && r.to > r.from ? `${clock(r.from)} → ${clock(r.to)}` : clock(r.from);
+        return r.text ? `${range}  「${clip(r.text).replace(/\n/g, ' / ')}」` : `${range}  （画面无文字）`;
+      });
+
+      const dur = meta.durationSec !== null ? `时长 ${clock(meta.durationSec)}` : '时长未知';
+      const size = meta.width && meta.height ? `${meta.width}×${meta.height}` : '分辨率未知';
+      const modeText =
+        res.mode === 'scene'
+          ? `场景变化检测（scene>${scene.toFixed(2)}）`
+          : `固定间隔抽帧（每 ${intervalSec}s；画面几乎无变化，已自动切换策略）`;
+      const head =
+        `[localvision_watch] ${basename(file)} · ${dur} · ${size} → 抽帧宽 ${this.cfg.screenshotMaxWidth}\n` +
+        `策略：${modeText}；抽出 ${res.frames.length} 帧并全部 OCR，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s` +
+        (ocrFailed ? `（${ocrFailed} 帧 OCR 失败）` : '') +
+        `\n时间线（时刻 → 画面文字）：\n`;
+
+      const blankCount = shots.filter((s) => !s.text).length;
+      const tail: string[] = [];
+      // 场景检测是 ffmpeg 报错（而非画面没变化）时如实说明，别让用户以为视频真的没变化。
+      if (res.sceneError) tail.push(`场景变化检测不可用（${res.sceneError}），已自动改用固定间隔抽帧`);
+      if (blankCount && !wantImages) {
+        tail.push(`${blankCount} 帧没有文字（多为纯画面）；要看画面内容请传 attachImages:true（最多附 3 张，会消耗 token）`);
+      } else if (blankCount && wantImages && !this.acceptsImage) {
+        tail.push(`${blankCount} 帧没有文字，但当前对话模型不接收图片，无法附图`);
+      }
+      if (rows.length && rows.every((r) => !r.text)) {
+        tail.push('整段都没有读出文字：可能是纯画面内容（游戏 / 视频），或 OCR 语言不匹配——可到配置页改 ocrLang，或传 attachImages:true 发图给模型看');
+      }
+      if (fromSec !== undefined || toSec !== undefined) {
+        tail.push(`已限定片段：${fromSec ?? 0}s → ${toSec ?? '末尾'}`);
+      }
+
+      // 附图的帧用 frame_<时刻>.jpg 命名：不含 screen/zoom/截图 特征，不会被硬拦截误当成屏幕截图。
+      const blobs = blanks.map((b) => ({
+        bytes: Buffer.from(b.bytes),
+        mime: 'image/jpeg',
+        name: `frame_${clock(b.t).replace(/:/g, '-')}.jpg`,
+        fallbackText: `视频帧 ${clock(b.t)}`,
+      }));
+      if (blobs.length) tail.push(`已附 ${blobs.length} 张无文字帧的原图（未做任何涂改）：${blobs.map((b) => b.fallbackText).join('、')}`);
+
+      return {
+        text: head + lines.join('\n') + (tail.length ? `\n\n${tail.join('\n')}` : ''),
+        ...(blobs.length ? { blobs } : {}),
+      };
+    } finally {
+      // 帧是临时产物：用完即删，与截图缓存同一套生命周期（重启也自然清空）。
+      await removeFrameDir(dir);
+    }
+  }
+
   /** 对单张截图做本机 OCR，返回「文字 + 坐标」结果；无文字或失败时返回 null。 */
   private async ocrOutcome(img: CaptureResult, display: unknown): Promise<ToolOutcome | null> {
     try {
@@ -1410,6 +1630,7 @@ class LocalVisionWorld {
         return r;
       },
       localvision_doctor: async (args) => this.doctor(args.checkModel === true),
+      localvision_watch: async (args) => this.watch(args),
     };
 
     return TOOL_DECLS.map((decl) => ({
@@ -1440,6 +1661,10 @@ class LocalVisionWorld {
         this.cfg.onOcrEmpty === 'image'
           ? '当前「OCR 兜底方式」为 图片：OCR 认不出字（游戏、视频、纯画面）时，截图会发给 Coopanion 已配的模型商兜底（消耗 token、画面上传），你能借此描述画面。'
           : '当前「OCR 兜底方式」为 文本：OCR 认不出字（游戏、视频、纯画面）时只返回已识别的文字，不发图、零额外开销；这种模式下你看不到画面内容。',
+      // 视频能力取决于系统有没有 ffmpeg，提示词必须和工具真实行为一致（没装就别让用户白试）。
+      'localvision.watch': this.ffmpegReady()
+        ? '可以看视频 / 录屏：用 localvision_watch（传视频文件绝对路径）在本机抽出画面变化的帧并 OCR 成「时刻 → 画面文字」的时间线，默认只返回文字、不传图。'
+        : '本机没装 ffmpeg，暂时看不了视频 / 录屏文件；用户想让你看录屏时，请如实说明并引导他先安装 ffmpeg（winget install Gyan.FFmpeg）。',
     };
   }
 
@@ -1667,6 +1892,7 @@ class LocalVisionWorld {
             { name: 'localvision.intercept', description: zh ? '硬拦截是否生效' : 'Whether hard interception is active' },
             { name: 'localvision.localmodel', description: zh ? '视觉模型是否可用' : 'Whether a vision model is available' },
             { name: 'localvision.ocrfallback', description: zh ? 'OCR 兜底方式（文本 / 图片）' : 'OCR fallback mode (text / image)' },
+            { name: 'localvision.watch', description: zh ? '能否看视频 / 录屏（ffmpeg 是否可用）' : 'Whether video watching is available (ffmpeg)' },
           ],
         },
       ],
