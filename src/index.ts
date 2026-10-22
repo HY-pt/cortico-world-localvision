@@ -1672,6 +1672,7 @@ class LocalVisionWorld {
           vars: [
             { name: 'localvision.intercept', description: zh ? '硬拦截是否生效' : 'Whether hard interception is active' },
             { name: 'localvision.localmodel', description: zh ? '视觉模型是否可用' : 'Whether a vision model is available' },
+            { name: 'localvision.ocrfallback', description: zh ? 'OCR 兜底方式（文本 / 图片）' : 'OCR fallback mode (text / image)' },
           ],
         },
       ],
