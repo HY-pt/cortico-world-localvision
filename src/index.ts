@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import type { WorldDefinition } from 'cortico/world.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { ToolDescribe, ToolDef, ToolOutcome, WorldHost } from 'cortico/core/types.ts';
-import { captureScreenshot, type CaptureResult } from './screenshot.ts';
+import { captureScreenshot, sweepStaleShots, type CaptureResult } from './screenshot.ts';
 import {
   autoOcrLang,
   disposeOcr,
@@ -577,6 +577,8 @@ class LocalVisionWorld {
     if (this.cfg.hookIntercept && typeof hookHost.registerToolOutcomeTransform === 'function') {
       this.unregisterHook = hookHost.registerToolOutcomeTransform((out, info) => this.transformToolOutcome(out, info));
     }
+    // 顺手清掉旧版本遗留的截屏临时文件（不 await：不能拖慢启动）。
+    void sweepStaleShots();
   }
 
   async stop(): Promise<void> {

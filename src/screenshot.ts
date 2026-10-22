@@ -13,12 +13,17 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fitToMax, type CaptureTransform } from './vision-space.ts';
 
 const exec = promisify(execFile);
+
+/** 删掉截屏临时文件；失败无所谓（只是 tmp 残留），绝不能影响主流程。 */
+async function cleanupTemp(...paths: string[]): Promise<void> {
+  await Promise.all(paths.map((p) => rm(p, { force: true }).catch(() => {})));
+}
 
 export interface CaptureResult extends CaptureTransform {
   base64: string; // 缩放后 PNG 的 base64（不含 data: 前缀）
@@ -40,68 +45,97 @@ export async function captureScreenshot(opts: CaptureOpts): Promise<CaptureResul
 
 async function captureMac(opts: CaptureOpts): Promise<CaptureResult> {
   const out = join(tmpdir(), `lv-${Date.now()}.png`);
-  // 主屏全尺寸（用于 region 坐标与还原基准）
-  const boundsRaw = (
-    await exec('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop'])
-      .then((r) => r.stdout)
-      .catch(() => '0 0 1920 1080')
-  ).trim();
-  const parts = boundsRaw.split(/\s+/).map(Number);
-  const fw = parts[2] || 1920;
-  const fh = parts[3] || 1080;
+  try {
+    // 主屏全尺寸（用于 region 坐标与还原基准）
+    const boundsRaw = (
+      await exec('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop'])
+        .then((r) => r.stdout)
+        .catch(() => '0 0 1920 1080')
+    ).trim();
+    const parts = boundsRaw.split(/\s+/).map(Number);
+    const fw = parts[2] || 1920;
+    const fh = parts[3] || 1080;
 
-  let rx = 0;
-  let ry = 0;
-  let rw = fw;
-  let rh = fh;
-  if (opts.region) {
-    rx = Math.max(0, Math.min(opts.region.x, fw - 1));
-    ry = Math.max(0, Math.min(opts.region.y, fh - 1));
-    rw = Math.max(1, Math.min(opts.region.w, fw - rx));
-    rh = Math.max(1, Math.min(opts.region.h, fh - ry));
-  }
+    let rx = 0;
+    let ry = 0;
+    let rw = fw;
+    let rh = fh;
+    if (opts.region) {
+      rx = Math.max(0, Math.min(opts.region.x, fw - 1));
+      ry = Math.max(0, Math.min(opts.region.y, fh - 1));
+      rw = Math.max(1, Math.min(opts.region.w, fw - rx));
+      rh = Math.max(1, Math.min(opts.region.h, fh - ry));
+    }
 
-  await exec('screencapture', ['-x', '-R', `${rx},${ry},${rw},${rh}`, out]);
-  const raw = await readFile(out);
-  const iw = raw.readUInt32BE(16); // PNG IHDR 宽（大端）
-  const ih = raw.readUInt32BE(20);
-  const { scale, scaledWidth, scaledHeight } = fitToMax(iw, ih, opts.maxWidth, opts.maxHeight);
-  if (scale < 1) {
-    // sips -z 参数为 <height> <width>
-    await exec('sips', ['-z', String(scaledHeight), String(scaledWidth), out]);
+    await exec('screencapture', ['-x', '-R', `${rx},${ry},${rw},${rh}`, out]);
+    const raw = await readFile(out);
+    const iw = raw.readUInt32BE(16); // PNG IHDR 宽（大端）
+    const ih = raw.readUInt32BE(20);
+    const { scale, scaledWidth, scaledHeight } = fitToMax(iw, ih, opts.maxWidth, opts.maxHeight);
+    if (scale < 1) {
+      // sips -z 参数为 <height> <width>
+      await exec('sips', ['-z', String(scaledHeight), String(scaledWidth), out]);
+    }
+    const buf = await readFile(out);
+    return {
+      base64: buf.toString('base64'),
+      nativeWidth: fw,
+      nativeHeight: fh,
+      regionX: rx,
+      regionY: ry,
+      regionW: rw,
+      regionH: rh,
+      scaledWidth: scale < 1 ? scaledWidth : rw,
+      scaledHeight: scale < 1 ? scaledHeight : rh,
+      scale,
+      monitor: 'primary',
+      capturedAt: Date.now(),
+    };
+  } finally {
+    await cleanupTemp(out);
   }
-  const buf = await readFile(out);
-  return {
-    base64: buf.toString('base64'),
-    nativeWidth: fw,
-    nativeHeight: fh,
-    regionX: rx,
-    regionY: ry,
-    regionW: rw,
-    regionH: rh,
-    scaledWidth: scale < 1 ? scaledWidth : rw,
-    scaledHeight: scale < 1 ? scaledHeight : rh,
-    scale,
-    monitor: 'primary',
-    capturedAt: Date.now(),
-  };
 }
 
 async function captureWin(opts: CaptureOpts): Promise<CaptureResult> {
   const out = join(tmpdir(), `lv-${Date.now()}.png`);
   const dimFile = join(tmpdir(), `lv-dim-${Date.now()}.json`);
-  const ps = buildWindowsCapturePs(
-    out,
-    dimFile,
-    opts.monitor ?? -1,
-    opts.maxWidth,
-    opts.maxHeight,
-    opts.region
-  );
-  await exec('powershell', ['-NoProfile', '-Command', ps]);
-  const dim = JSON.parse(await readFile(dimFile, 'utf8')) as Omit<CaptureResult, 'base64' | 'capturedAt'>;
-  const buf = await readFile(out);
-  return { base64: buf.toString('base64'), ...dim, capturedAt: Date.now() };
+  try {
+    const ps = buildWindowsCapturePs(
+      out,
+      dimFile,
+      opts.monitor ?? -1,
+      opts.maxWidth,
+      opts.maxHeight,
+      opts.region
+    );
+    await exec('powershell', ['-NoProfile', '-Command', ps]);
+    const dim = JSON.parse(await readFile(dimFile, 'utf8')) as Omit<CaptureResult, 'base64' | 'capturedAt'>;
+    const buf = await readFile(out);
+    return { base64: buf.toString('base64'), ...dim, capturedAt: Date.now() };
+  } finally {
+    await cleanupTemp(out, dimFile);
+  }
+}
+
+/**
+ * 清理本扩展历史遗留的截屏临时文件：旧版本截图后不删，tmpdir 下会攒一堆
+ * （Coopanion 把 TMPDIR 指到 data/tmp，系统重启不会清）。只删 lv- 前缀、
+ * 文件名时间戳超过 1 小时的文件，正在进行的截图不受影响。
+ */
+export async function sweepStaleShots(): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(tmpdir());
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - 3600_000;
+  const stale = names.filter((n) => {
+    if (!/^lv-(dim-)?\d{10,}\.(png|json)$/.test(n)) return false;
+    const m = /(\d{10,})/.exec(n);
+    return m ? Number(m[1]) < cutoff : false;
+  });
+  await Promise.all(stale.map((n) => rm(join(tmpdir(), n), { force: true }).catch(() => {})));
 }
 
 /** Windows：DPI 感知截屏 + 可选矩形裁剪 + 等比缩放到上限，并把尺寸写进 dimFile。 */
