@@ -1656,22 +1656,22 @@ class LocalVisionWorld {
   envPromptVars(): Record<string, string> {
     return {
       'localvision.intercept': this.unregisterHook
-        ? '截图已在本地硬拦截：pet_cua_screenshot 返回的图片会被本机 OCR 转成文字，不会上传；正常使用即可。'
-        : '本机没有硬拦截：不要调用 pet_cua_screenshot / pet_cua_zoom（会传图）；动作工具请传 screenshot:false。',
+        ? '截图已经被拦在本机了：就算调用 pet_cua_screenshot，拿到的也是本机读出来的文字，不会把图传出去。正常用就行。'
+        : '还没开硬拦截：别调用 pet_cua_screenshot / pet_cua_zoom（会把图传出去）；做动作时记得传 screenshot:false。',
       'localvision.localmodel':
         this.cfg.localModelEnabled && this.cfg.localModelBaseUrl.trim() && this.cfg.localModelName.trim()
-          ? '需要理解画面内容（游戏、图片、图表、视频帧）时，用 localvision_describe：视觉模型会描述画面（本地/线上按配置）。识别或模型异常时先调 localvision_doctor。'
-          : '视觉模型未配置：本机看不了图，不要尝试获取或描述截图画面（不要调 pet_cua_screenshot / cua_screenshot，截图不会发给云端）。画面类问题直接告知用户「本机暂不支持看图」；如果用户有看图片的需求，引导他去「模型」页（或配置页）打开视觉模型并填好端点与模型名，配好后会自动生效。只依赖 OCR 文字与坐标操作。异常时先调 localvision_doctor。',
+          ? '想看懂画面内容（游戏、图片、图表、视频里某一幕），用 localvision_describe，它会让配好的视觉模型把画面讲给你听。出问题先调 localvision_doctor。'
+          : '还没配视觉模型，所以现在看不了图。别去调 pet_cua_screenshot / cua_screenshot（截图也不会传到云端，调了也白调）；遇到画面类问题就老实告诉用户「现在还看不了图」，想看图请他去「模型」页打开视觉模型、填好地址和模型名，配好自动生效。平时只靠读出来的文字和坐标干活。有问题先调 localvision_doctor。',
       // 判定与 perceive 的 coopFallback 同一个（onOcrEmpty === 'image'），不另写一套：
       // 老配置缺字段时两边都落到「文本」分支，提示词与真实行为不会对不上。
       'localvision.ocrfallback':
         this.cfg.onOcrEmpty === 'image'
-          ? '当前「OCR 兜底方式」为 图片：OCR 认不出字（游戏、视频、纯画面）时，截图会发给 Coopanion 已配的模型商兜底（消耗 token、画面上传），你能借此描述画面。'
-          : '当前「OCR 兜底方式」为 文本：OCR 认不出字（游戏、视频、纯画面）时只返回已识别的文字，不发图、零额外开销；这种模式下你看不到画面内容。',
+          ? '当前「OCR 兜底方式」是「图片」：读不出字的时候（游戏、视频、纯画面），会把截图发给用户已配的 AI 去看（会消耗 token、画面会上传），这样你就能讲出画面里有什么。'
+          : '当前「OCR 兜底方式」是「文本」：读不出字的时候只把已经读到的字给你，不发图、不花钱——代价是画面里有什么你就看不到了。',
       // 视频能力取决于系统有没有 ffmpeg，提示词必须和工具真实行为一致（没装就别让用户白试）。
       'localvision.watch': this.ffmpegReady()
-        ? '可以看视频 / 录屏：用 localvision_watch（传视频文件绝对路径）在本机抽出画面变化的帧并 OCR 成「时刻 → 画面文字」的时间线，默认只返回文字、不传图。'
-        : '本机没装 ffmpeg，暂时看不了视频 / 录屏文件；用户想让你看录屏时，请如实说明并引导他先安装 ffmpeg（winget install Gyan.FFmpeg）。',
+        ? '能看视频和录屏：用 localvision_watch，把视频文件的完整路径传进去就行。它会在本机挑出画面有变化的那些瞬间来读字，给你一份「第几秒 → 屏幕上写着什么」的清单，默认一张图都不传。'
+        : '本机没装 ffmpeg，暂时看不了视频 / 录屏；用户想让你看录屏时，如实说明并引导他先装 ffmpeg（Windows：winget install Gyan.FFmpeg）。',
     };
   }
 
