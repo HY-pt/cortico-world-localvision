@@ -46,7 +46,8 @@ export async function captureScreenshot(opts: CaptureOpts): Promise<CaptureResul
   const platform = process.platform;
   if (platform === 'darwin') return captureMac(opts);
   if (platform === 'win32') return captureWin(opts);
-  throw new Error(`localvision: 不支持的平台 ${platform}（仅支持 win32 / darwin）`);
+  if (platform === 'linux') return captureLinux(opts);
+  throw new Error(`localvision: 不支持的平台 ${platform}（仅支持 win32 / darwin / linux）`);
 }
 
 async function captureMac(opts: CaptureOpts): Promise<CaptureResult> {
@@ -126,6 +127,167 @@ async function captureWin(opts: CaptureOpts): Promise<CaptureResult> {
     await cleanupTemp(out, dimFile);
     ownShots.delete(out);
     ownShots.delete(dimFile);
+  }
+}
+
+/**
+ * Linux 截图：零 npm 依赖，调用系统自带截图工具。
+ *  - Wayland（grim）：全屏 `grim out.png`，局部 `grim -g "x,y WxH" out.png`。
+ *  - X11：优先 ImageMagick（import 可一步全屏/裁切），其次 maim（`-g` 几何），再次 scrot（仅全屏，
+ *    局部会退化为全屏——坐标换算以全屏为准）。
+ * 探测不到任何工具时抛错，提示用户安装。先全屏截一张拿原生分辨率（region 坐标与
+ * nativeWidth/Height 基准都要），需要局部再截对应矩形；等比缩放到上限走 ImageMagick `convert`。
+ */
+interface LinuxTools {
+  wayland: boolean;
+  /** 全屏捕获（原生分辨率，不缩放）。 */
+  full: (out: string) => Promise<void>;
+  /** 局部捕获（原生分辨率，不缩放）。supportsRegion=false 时调用方应退化为全屏。 */
+  region: (out: string, x: number, y: number, w: number, h: number) => Promise<void>;
+  supportsRegion: boolean;
+  /** 等比缩放到指定像素（仅在本机有 ImageMagick 时存在）。 */
+  resize?: (out: string, w: number, h: number) => Promise<void>;
+}
+
+let cachedLinuxTools: LinuxTools | null = null;
+
+async function detectLinuxTools(): Promise<LinuxTools> {
+  if (cachedLinuxTools) return cachedLinuxTools;
+  const wayland = !!(process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland');
+  const has = async (cmd: string): Promise<boolean> => {
+    try {
+      const r = await exec('sh', ['-c', `command -v ${cmd}`]);
+      return (r.stdout || '').trim().length > 0;
+    } catch {
+      return false;
+    }
+  };
+  const convertBin = (await has('convert')) ? 'convert' : (await has('magick')) ? 'magick' : null;
+  const resize = convertBin
+    ? async (out: string, w: number, h: number) => {
+        await exec(convertBin, [out, '-resize', `${w}x${h}`, out]);
+      }
+    : undefined;
+
+  let tools: LinuxTools;
+  if (wayland) {
+    if (!(await has('grim'))) {
+      throw new Error('localvision: Linux(Wayland) 需要 grim 截图工具，请先安装（如 sudo apt install grim）');
+    }
+    tools = {
+      wayland: true,
+      full: async (out) => {
+        await exec('grim', [out]);
+      },
+      region: async (out, x, y, w, h) => {
+        await exec('grim', ['-g', `${x},${y} ${w}x${h}`, out]);
+      },
+      supportsRegion: true,
+      resize,
+    };
+  } else {
+    if (await has('import')) {
+      tools = {
+        wayland: false,
+        full: async (out) => {
+          await exec('import', ['-window', 'root', out]);
+        },
+        region: async (out, x, y, w, h) => {
+          await exec('import', ['-window', 'root', '-crop', `${w}x${h}+${x}+${y}`, out]);
+        },
+        supportsRegion: true,
+        resize,
+      };
+    } else if (await has('maim')) {
+      tools = {
+        wayland: false,
+        full: async (out) => {
+          await exec('maim', [out]);
+        },
+        region: async (out, x, y, w, h) => {
+          await exec('maim', ['-g', `${w}x${h}+${x}+${y}`, out]);
+        },
+        supportsRegion: true,
+        resize,
+      };
+    } else if (await has('scrot')) {
+      // scrot 不支持非交互式矩形裁切，局部退化为全屏（坐标以全屏为准）。
+      tools = {
+        wayland: false,
+        full: async (out) => {
+          await exec('scrot', ['-o', out]);
+        },
+        region: async (out) => {
+          await exec('scrot', ['-o', out]);
+        },
+        supportsRegion: false,
+        resize,
+      };
+    } else {
+      throw new Error(
+        'localvision: Linux(X11) 未找到截图工具，请安装其一：ImageMagick(imagemagick) / maim / scrot',
+      );
+    }
+  }
+  cachedLinuxTools = tools;
+  return tools;
+}
+
+async function captureLinux(opts: CaptureOpts): Promise<CaptureResult> {
+  const out = join(tmpdir(), `lv-${Date.now()}.png`);
+  ownShots.add(out);
+  try {
+    const tools = await detectLinuxTools();
+
+    // 1) 先全屏截一张拿原生分辨率（DPI 感知）。
+    await tools.full(out);
+    const fullBuf = await readFile(out);
+    const fw = fullBuf.readUInt32BE(16); // PNG IHDR 宽（大端）
+    const fh = fullBuf.readUInt32BE(20);
+
+    let rx = 0;
+    let ry = 0;
+    let rw = fw;
+    let rh = fh;
+    if (opts.region && tools.supportsRegion) {
+      rx = Math.max(0, Math.min(Math.round(opts.region.x), fw - 1));
+      ry = Math.max(0, Math.min(Math.round(opts.region.y), fh - 1));
+      rw = Math.max(1, Math.min(Math.round(opts.region.w), fw - rx));
+      rh = Math.max(1, Math.min(Math.round(opts.region.h), fh - ry));
+      await tools.region(out, rx, ry, rw, rh);
+    }
+
+    const raw = await readFile(out);
+    const iw = raw.readUInt32BE(16);
+    const ih = raw.readUInt32BE(20);
+    const { scale: fitScale, scaledWidth: outW, scaledHeight: outH } = fitToMax(iw, ih, opts.maxWidth, opts.maxHeight);
+    let finalW = iw;
+    let finalH = ih;
+    if (fitScale < 1 && tools.resize) {
+      await tools.resize(out, outW, outH);
+      finalW = outW;
+      finalH = outH;
+    }
+    const buf = await readFile(out);
+    return {
+      base64: buf.toString('base64'),
+      nativeWidth: fw,
+      nativeHeight: fh,
+      regionX: rx,
+      regionY: ry,
+      regionW: rw,
+      regionH: rh,
+      // 无 resize 工具时按原图尺寸上报（tesseract 自行缩放，坐标仍用 regionW/scaledWidth 还原，不影响定位）。
+      scaledWidth: finalW,
+      scaledHeight: finalH,
+      // scale 与 scaledWidth 自洽：实际缩放过 = fitScale（<1），没缩放 = 1（nativeWidth*scale === scaledWidth 恒成立）。
+      scale: finalW < iw ? fitScale : 1,
+      monitor: 'primary',
+      capturedAt: Date.now(),
+    };
+  } finally {
+    await cleanupTemp(out);
+    ownShots.delete(out);
   }
 }
 

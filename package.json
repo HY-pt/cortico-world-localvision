@@ -1,18 +1,15 @@
 {
   "name": "cortico-world-localvision",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "main": "./src/index.ts",
-  "description": "在本机把屏幕 OCR 成「文字 + 坐标」，默认不把截图发到云端，省掉每帧看屏的 token；可选接视觉模型，也可硬拦截内置截图。",
+  "description": "让 AI 助手能看懂你的电脑屏幕，但截图全程只留在你电脑上、不上传云端——既保护隐私，又省下每次看屏的流量与费用。要看图标、游戏、图片这类只有画面没有文字的内容时，可接一个本地或在线视觉模型；也能拦住其他工具偷偷把截图发出去。",
   "author": "HY-pt",
   "keywords": [
     "cortico-world",
     "cortico"
   ],
   "license": "MIT",
-  "engines": {
-    "node": ">=22"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HY-pt/cortico-world-localvision.git"
@@ -35,11 +32,12 @@
   ],
   "os": [
     "win32",
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "cortico": {
     "kind": "world",
-    "api": 6,
+    "api": 5,
     "displayName": "本地视觉 LocalVision",
     "icon": "assets/icon.png",
     "describe": "describe.json",
@@ -53,11 +51,11 @@
     "locales": {
       "zh": {
         "displayName": "本地视觉 LocalVision",
-        "description": "在本机把屏幕 OCR 成「文字 + 坐标」，默认不上传截图，省掉每帧看屏的 token；可选接视觉模型看图，也可硬拦截内置截图。"
+        "description": "让 AI 助手能看懂你的电脑屏幕，但截图全程只留在你电脑上、不上传云端——既保护隐私，又省下每次看屏的流量与费用。要看图标、游戏、图片这类只有画面没有文字的内容时，可接一个本地或在线视觉模型；也能拦住其他工具偷偷把截图发出去。"
       },
       "en": {
         "displayName": "LocalVision",
-        "description": "Reads the screen locally with OCR and returns text with coordinates, keeping screenshots off the cloud by default. Optional vision model and built-in screenshot interception."
+        "description": "Lets your AI assistant see your screen, but screenshots stay on your computer and are never sent to the cloud — keeping things private and cheap. For icons, games, or images, it can use a local or online vision model, and it can also stop other tools from silently uploading screenshots."
       }
     }
   },
