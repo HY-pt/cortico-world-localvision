@@ -183,7 +183,7 @@ insertBefore(
 if (failed) {
   // postinstall 场景（--silent）也退出 0：补丁打不上不该阻断安装，插件会退化成软约束，
   // 诊断面板/doctor 会明确报出「硬拦截未生效」。显式手动跑时不静音，让人看见错误。
-  console.error('\n✗ 有锚点没匹配上，未写入任何文件。请确认宿主为 Coopanion 0.2.5（build/cortico/src）。');
+  console.error('\n✗ 有锚点没匹配上，未写入任何文件。请确认宿主为 Coopanion 0.2.5 / 0.2.6（build/cortico/src）。');
   process.exit(silent ? 0 : 1);
 }
 

@@ -1,5 +1,5 @@
 # localvision 核心钩子：工具回执落库前可变换（用于把截图换成 OCR 文本）
-# 适用：Coopanion 0.2.5 / build/cortico/src
+# 适用：Coopanion 0.2.5 / 0.2.6 / build/cortico/src（0.2.6 已实测：9 个锚点全部命中）
 # 重新应用：cd resources/app/build/cortico/src && patch -p0 < core-tool-outcome-hook.patch
 
 --- core/types.ts
