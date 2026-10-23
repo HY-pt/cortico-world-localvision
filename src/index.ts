@@ -28,6 +28,18 @@ import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { ToolDescribe, ToolDef, ToolOutcome, WorldHost } from 'cortico/core/types.ts';
 import { captureScreenshot, clearPreviousShots, type CaptureResult } from './screenshot.ts';
 import {
+  decideFallback,
+  emptyCounters,
+  estimateImageTokens,
+  formatFallbackHint,
+  gateEventLine,
+  isScreenshotLike,
+  type GateAction,
+  type GateCounters,
+  type GateEvent,
+  type OcrStatus,
+} from './visionGate.ts';
+import {
   autoOcrLang,
   disposeOcr,
   imageSize,
@@ -66,6 +78,17 @@ export interface LocalVisionSection {
   hookTools: string[];
   /** OCR 找不到文字时（硬拦截与 see 工具共用）：'image' 把截图发给 Coopanion 对话模型，'text' 丢弃图片只留提示。 */
   onOcrEmpty: 'image' | 'text';
+  /**
+   * OCR **失败**时（抛异常、取不到字节或尺寸）：与「空结果」分开处理。
+   * 默认 'image'——空结果是画面本来没字，失败是故障，两者的健康度含义完全不同；
+   * 但也同样兜底，保住「任何情况下都有回应」的底线。
+   */
+  onOcrFailure: 'image' | 'text';
+  /**
+   * 图片兜底时在回执里加一句「这是兜底，看画面别读字」的提示。默认 true。
+   * 不加的话模型拿到无字截图会硬读字或回「看不清」，兜底等于白兜。
+   */
+  fallbackHint: boolean;
   /**
    * 图片兜底时附带本机 OCR 的「文字 + 坐标」纯文本（text assist）。
    * 截图按原图发送，一个像素都不改；多带一段文本让模型不用靠读图认字。
@@ -491,6 +514,24 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
               : 'Image (default): when OCR finds no text, the screenshot is sent to the Coopanion model as a fallback — it can read games, video, etc. (costs tokens).\nText: returns recognized text only; no image is sent and no extra cost.',
             'x-hot': true,
           },
+          [`${K}.onOcrFailure`]: {
+            type: 'string',
+            title: zh ? 'OCR 失败时' : 'On OCR failure',
+            enum: ['image', 'text'],
+            'x-options': 'localvision.onOcrFailure',
+            description: zh
+              ? '识别**出错**时（不是「画面没字」）怎么办。图片（默认）：同样把截图发给模型兜底，保证有回应，并记一条 warn 日志。\n文本：只留一句提示、不发图。'
+              : 'What to do when OCR **errors** (not "no text found"). Image (default): still fall back to the screenshot so there is always a response, and log a warning.\nText: keep a notice only, no image.',
+            'x-hot': true,
+          },
+          [`${K}.fallbackHint`]: {
+            type: 'boolean',
+            title: zh ? '兜底时提示模型看画面' : 'Hint model on fallback',
+            description: zh
+              ? '图片兜底时在回执里加一句「这是视觉兜底，关注画面别读字」。默认开启——不然模型会对着无字截图硬读字或回「看不清」。'
+              : 'Append a "this is a visual fallback, look at the scene not the text" note when falling back to an image. On by default.',
+            'x-hot': true,
+          },
           [`${K}.hookIntercept`]: {
             type: 'boolean',
             title: zh ? '硬拦截截图（需框架 hook）' : 'Intercept screenshots (needs hook)',
@@ -565,6 +606,9 @@ function defaultLocalVisionSection(): LocalVisionSection {
     hookIntercept: true,
     hookTools: ['pet_cua_screenshot', 'pet_cua_zoom', 'cua_screenshot', 'cua_zoom'],
     onOcrEmpty: 'image',
+    // 失败与空结果默认都兜底：宁可多花一次 token，也不能让模型拿不到任何回应。
+    onOcrFailure: 'image',
+    fallbackHint: true,
     localModelEnabled: false,
     localModelProvider: 'qwen',
     localModelBaseUrl: '',
@@ -607,7 +651,7 @@ const localVisionDef = {
         { value: 'ocr-only', label: 'OCR-only' },
       ];
     }
-    if (kind === 'localvision.onOcrEmpty') {
+    if (kind === 'localvision.onOcrEmpty' || kind === 'localvision.onOcrFailure') {
       return [
         { value: 'image', label: zh ? '图片' : 'Image' },
         { value: 'text', label: zh ? '文本' : 'Text' },
@@ -635,6 +679,10 @@ class LocalVisionWorld {
   private ocrCalls = 0;
   private lastOcrMs = 0;
   private lastOcrWords = 0;
+  /** 最近一次 OCR 失败的原因（空 = 没失败过）；诊断里要看本机 OCR 健康度。 */
+  private lastOcrError = '';
+  /** 视觉门控（硬拦截钩子）的计量：拦截数、兜底次数、估算 token 成本。 */
+  private readonly gate: GateCounters = emptyCounters();
   /**
    * 实验性功能的最近一次报错：key 是编号（EXP-01…），value 是截断后的原因。
    * 实验功能一律降级处理（不搞挂主流程），但报错要留痕——诊断面板按同一套编号展示，
@@ -700,17 +748,7 @@ class LocalVisionWorld {
     };
   }
 
-  private isImage(blob: unknown): boolean {
-    const mime = (blob as { mime?: unknown })?.mime;
-    return typeof mime === 'string' && mime.startsWith('image/');
-  }
-
-  /** 截图特征：内置 cua 的 blob 叫 screen.jpg / zoom.jpg，fallbackText 是「屏幕截图 …」。 */
-  private isScreenshotBlob(blob: unknown): boolean {
-    if (!this.isImage(blob)) return false;
-    const b = blob as { name?: unknown; fallbackText?: unknown };
-    return /screen|zoom|截图|截圖/i.test(`${b.name ?? ''} ${b.fallbackText ?? ''}`);
-  }
+  // blob 筛选（isImageBlob / isScreenshotLike）已挪到 src/visionGate.ts：纯函数、可单测。
 
   private blobBytes(blob: unknown): Uint8Array | null {
     const b = blob as { bytes?: unknown; handle?: unknown };
@@ -759,12 +797,19 @@ class LocalVisionWorld {
     const blobs = out.blobs;
     if (!this.cfg.hookIntercept || !blobs?.length) return out;
     const forced = this.cfg.hookTools.includes(info.tool);
-    const targets = blobs.filter((b) => this.isScreenshotBlob(b) || (forced && this.isImage(b)));
+    const targets = blobs.filter((b) => isScreenshotLike(b, forced));
     if (!targets.length) return out;
+
+    const g = this.gate;
+    g.calls += 1;
+    g.intercepted += targets.length;
+
+    const policy = { onOcrEmpty: this.cfg.onOcrEmpty, onOcrFailure: this.cfg.onOcrFailure };
+    const acceptsImage = this.acceptsImage;
 
     let text = out.text;
     const kept: NonNullable<ToolOutcome['blobs']> = [];
-    let changed = false;
+    let anyImageFallback = false;
 
     for (const blob of blobs) {
       if (!targets.includes(blob)) {
@@ -773,40 +818,134 @@ class LocalVisionWorld {
       }
       const bytes = this.blobBytes(blob);
       const dims = bytes ? imageSize(bytes) : null;
+
+      // 取不到字节或尺寸：OCR 的前置条件就不成立，这是**失败**不是「画面没字」，
+      // 走 onOcrFailure；原先这里静默保留原图，连条日志都没有。
       if (!bytes || !dims) {
-        kept.push(blob);
+        const d = decideFallback('failed', policy, acceptsImage);
+        this.recordGate(d, info.tool, blob, 0, 'no-bytes-or-size');
+        if (d.imageFallback) {
+          kept.push(blob);
+          anyImageFallback = true;
+        } else {
+          text += `\n\n[本机 OCR] 这张图取不到画面数据，无法识别，图片已丢弃。`;
+        }
         continue;
       }
 
       const key = this.ocrCacheKey(bytes, this.cfg.ocrLang, dims.w, dims.h);
-      let words = this.ocrCache.get(key);
-      if (!words) {
-        words = await this.runOcr(Buffer.from(bytes).toString('base64'), {
+      const cached = this.ocrCache.get(key);
+      let status: OcrStatus;
+      let words: OcrWord[];
+      let err = '';
+
+      if (cached) {
+        g.cacheHit += 1;
+        words = cached;
+        status = words.length ? 'hit' : 'empty';
+      } else {
+        const r = await this.ocrWithStatus(Buffer.from(bytes).toString('base64'), {
           lang: this.cfg.ocrLang || undefined,
           cacheDir: this.cacheDir,
           width: dims.w,
           height: dims.h,
         });
-        if (this.ocrCache.size > 200) this.ocrCache.clear();
-        this.ocrCache.set(key, words);
+        status = r.status;
+        words = r.words;
+        err = r.error ?? '';
+        // 失败不入缓存：否则故障期间会被后续同一张图一直命中，看起来像「画面没字」
+        if (status !== 'failed') {
+          if (this.ocrCache.size > 200) this.ocrCache.clear();
+          this.ocrCache.set(key, words);
+        }
       }
+      if (status === 'empty') g.ocrEmpty += 1;
 
-      if (words.length) {
+      const d = decideFallback(status, policy, acceptsImage);
+      const tokenCost = d.imageFallback ? estimateImageTokens(dims.w, dims.h) : 0;
+      this.recordGate(d, info.tool, blob, tokenCost, err);
+
+      if (status === 'hit') {
+        g.ocrHit += 1;
         text +=
           `\n\n[本机 OCR] 这张截图已在本地转成文字，未上传图片：\n` +
           `${ocrToLocatedTextMapped(words, (nx, ny) => ({ x: nx * dims.w, y: ny * dims.h }))}\n` +
           `坐标 = 该截图像素，可直接传给 pet_cua_click。`;
-        changed = true;
-      } else if (this.cfg.onOcrEmpty === 'text') {
-        text += `\n\n[本机 OCR] 这张截图没有识别到文字，图片已丢弃。`;
-        changed = true;
-      } else {
+      } else if (d.imageFallback) {
         kept.push(blob);
+        anyImageFallback = true;
+      } else {
+        // 降级为文字时如实区分：故障说故障，没字说没字，别都写成「没有文字」
+        text +=
+          status === 'failed'
+            ? `\n\n[本机 OCR] 这张截图识别失败（${err.slice(0, 120) || '未知原因'}），图片已丢弃。`
+            : `\n\n[本机 OCR] 这张截图没有识别到文字，图片已丢弃。`;
       }
     }
 
+    // 兜底提示：只在真的把原图发给模型时追加，且一次回执只加一次（多张图不重复刷屏）。
+    // 少了这句，模型拿到无字截图会去硬读字或回「看不清」，兜底等于白兜。
+    if (anyImageFallback && this.cfg.fallbackHint) {
+      text += formatFallbackHint();
+    }
+
+    // 注意不能用旧的 `changed` 布尔：全部走图片兜底时没有任何文本改动，
+    // 但兜底提示同样要生效——按「文本变了 或 blob 数变了」判断才不会漏。
+    const changed = text !== out.text || kept.length !== blobs.length;
     if (!changed) return out;
     return { ...out, text, ...(kept.length ? { blobs: kept } : { blobs: undefined }) };
+  }
+
+  /**
+   * 记一次门控结果：更新计数器 + 写一条结构化日志。
+   * 兜底对应真金白银的 token，单独走 info 并高亮；OCR 失败走 warn 便于排查健康度。
+   */
+  private recordGate(
+    d: { action: GateAction; imageFallback: boolean; reason: string },
+    tool: string,
+    blob: unknown,
+    tokenCost: number,
+    err: string,
+  ): void {
+    const g = this.gate;
+    if (d.imageFallback) g.fallbackImage += 1;
+    else if (d.action === 'dropped') {
+      g.dropped += 1;
+      g.fallbackText += 1;
+    }
+    // 失败与空结果分开计数：前者是故障要排查，后者只是画面没字。
+    if (d.reason.startsWith('ocr-failed') || d.reason === 'no-bytes-or-size') g.ocrFailed += 1;
+    g.estimatedTokens += tokenCost;
+
+    const e: GateEvent = {
+      ts: new Date().toISOString(),
+      tool,
+      blobType: typeof (blob as { mime?: unknown })?.mime === 'string' ? String((blob as { mime: string }).mime) : 'unknown',
+      ocrHit: d.reason === 'ocr-hit',
+      action: d.action,
+      reason: d.reason,
+      estimatedTokenCost: tokenCost,
+      ...(err ? { error: err.slice(0, 200) } : {}),
+    };
+    const line = `localvision.gate ${gateEventLine(e)}`;
+    try {
+      const log = this.host?.log;
+      if (!log) return;
+      if (d.imageFallback) log.info(line);
+      else if (d.reason.startsWith('ocr-failed') || d.reason === 'no-bytes-or-size') log.warn(line);
+      else log.debug(line);
+    } catch {
+      /* 日志写失败绝不能影响回执本身 */
+    }
+  }
+
+  /** 只读快照：诊断面板与 doctor 都从这里取，避免外部改到内部计数器。 */
+  getVisionGateStats(): GateCounters & { hookInterceptActive: boolean; lastOcrError: string } {
+    return {
+      ...this.gate,
+      hookInterceptActive: this.unregisterHook !== null,
+      lastOcrError: this.lastOcrError,
+    };
   }
 
   private get acceptsImage(): boolean {
@@ -1050,7 +1189,10 @@ class LocalVisionWorld {
     return words;
   }
 
-  /** OCR 调用统一入口：记录次数、耗时、词数，供诊断用。 */
+  /**
+   * OCR 调用统一入口：记录次数、耗时、词数，供诊断用。
+   * 失败会抛——工具路径由 handler 的 try/catch 兜住，转成 failed 文本回执。
+   */
   private async runOcr(base64: string, opts: OcrOptions): Promise<OcrWord[]> {
     const t0 = Date.now();
     let words: OcrWord[] = [];
@@ -1064,6 +1206,27 @@ class LocalVisionWorld {
     }
   }
 
+  /**
+   * 钩子专用：把 OCR 结果分成 命中 / 空 / 失败 三态。
+   *
+   * 钩子路径原先只 try/finally，异常会直接冒泡到宿主的回执处理——
+   * 一次语言包缺失或预热失败就能把整个工具回执搞挂，而且没有任何兜底。
+   * 这里捕获后交给 onOcrFailure 决策，保住「任何情况下都有回应」。
+   */
+  private async ocrWithStatus(
+    base64: string,
+    opts: OcrOptions,
+  ): Promise<{ status: OcrStatus; words: OcrWord[]; error?: string }> {
+    try {
+      const words = await this.runOcr(base64, opts);
+      return { status: words.length ? 'hit' : 'empty', words };
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e);
+      this.lastOcrError = msg.slice(0, 200);
+      return { status: 'failed', words: [], error: msg };
+    }
+  }
+
   /** 诊断报告：屏幕/DPI、OCR 语言与缓存、硬拦截、视觉模型配置与可达性。 */
   /** 采集诊断数据：文本报告（工具用）+ 分区/模型/建议（面板用）。 */
   private async doctorData(checkModel: boolean): Promise<DoctorReport> {
@@ -1072,7 +1235,10 @@ class LocalVisionWorld {
     const locale = systemLocale();
     const resolved = resolveOcrLangs(cfg.ocrLang);
     lines.push(`系统: ${process.platform} ${process.arch}, Node ${process.versions.node}, locale ${locale || '(未知)'}`);
-    lines.push(`OCR: 配置 ${cfg.ocrLang || '(空)'} → 实际 ${resolved}; 调用 ${this.ocrCalls} 次, 最近 ${this.lastOcrMs}ms / ${this.lastOcrWords} 词`);
+    lines.push(
+      `OCR: 配置 ${cfg.ocrLang || '(空)'} → 实际 ${resolved}; 调用 ${this.ocrCalls} 次, 最近 ${this.lastOcrMs}ms / ${this.lastOcrWords} 词` +
+        (this.gate.ocrFailed ? `; 失败 ${this.gate.ocrFailed} 次 (最近: ${this.lastOcrError || '未知'})` : ''),
+    );
 
     let cachedLangs: string[] = [];
     let langCache = '(空，首次 OCR 会下载)';
@@ -1121,6 +1287,12 @@ class LocalVisionWorld {
 
     const hook = this.unregisterHook ? '已注册（核心 hook 生效）' : '未注册（框架没打 hook 或 hookIntercept=false）';
     lines.push(`硬拦截: ${hook}`);
+    // 拦截计量：兜底次数单独列出——它直接对应 token 成本，是用户最该盯的数字。
+    const g = this.gate;
+    lines.push(
+      `拦截统计: 回执 ${g.calls} 次 / 截图 ${g.intercepted} 张; OCR 命中 ${g.ocrHit}, 空结果 ${g.ocrEmpty}, 失败 ${g.ocrFailed}, 缓存命中 ${g.cacheHit}; ` +
+        `图片兜底 ${g.fallbackImage} 次 (估算 ${g.estimatedTokens} tokens), 文字降级 ${g.fallbackText} 次`,
+    );
 
     // 内置 cua 的「操作后附截图」：它开着的话，每次动作工具执行完都会再附一张图。
     // 这是桌面宠自己配置段里的开关（我们写不进别人的命名空间），只能观察 + 建议。
@@ -1167,6 +1339,12 @@ class LocalVisionWorld {
           : '内置 cua 的「操作后截图」还开着：每次动作后都会向模型传一张图——建议在高级配置把 worlds.desktop-pet.cua.screenshot.afterAction 设为 false',
       );
     }
+    // OCR 失败过就该让人看见：这是故障信号，不是「画面没字」。
+    if (this.gate.ocrFailed)
+      tips.push(
+        `本机 OCR 已失败 ${this.gate.ocrFailed} 次${this.lastOcrError ? `（最近：${this.lastOcrError.slice(0, 80)}）` : ''}` +
+          '：多半是语言包没缓存或预热失败，请看上方「语言包缓存」；持续失败时改用 OCR 语言 eng 试一次',
+      );
     if (route.blockedBy === 'missing-endpoint') tips.push('视觉模型已启用但缺地址/模型名：请到「模型」页补全');
     if (route.blockedBy === 'missing-key')
       tips.push('视觉模型已启用，但在线端点没填 API Key：看图请求会降级交给 Coopanion 模型商（费 token）；请到「模型」页填 Key，或改用本地模型');

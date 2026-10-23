@@ -64,7 +64,8 @@
     "esbuild": "^0.25.12"
   },
   "scripts": {
-    "test": "node --experimental-transform-types scripts/describe-extension.ts && node --experimental-transform-types scripts/check-extension.ts",
+    "test": "node --experimental-transform-types scripts/describe-extension.ts && node --experimental-transform-types scripts/check-extension.ts && npm run test:unit",
+    "test:unit": "node --experimental-transform-types --test tests/visionGate.test.ts tests/gate.test.ts",
     "smoke": "node scripts/smoke.mjs",
     "build:web": "node scripts/build-webui.mjs",
     "describe:extension": "node --experimental-transform-types scripts/describe-extension.ts",
