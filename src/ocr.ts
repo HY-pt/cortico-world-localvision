@@ -20,7 +20,19 @@ export interface OcrWord {
   w: number; // 宽归一化 (0-1)
   h: number; // 高归一化 (0-1)
   line: number;
+  /**
+   * true = 只有文字、没有位置。单行回落模式不做版面分析（blocks 为空），
+   * 拿不到坐标；这种词**不能用于点击**，输出时要如实说明，别让模型拿假坐标去点。
+   */
+  noBox?: boolean;
 }
+
+/**
+ * 单行回落的置信度门槛。
+ * 实测（2026-10-23）：标准字幕回落 conf 63~93，CG 艺术字碎片 conf 0~15——
+ * 两者完全不重叠，取 40 能干净分开：要字幕、不要幻觉。
+ */
+export const SINGLE_LINE_MIN_CONF = 40;
 
 export interface OcrItem {
   text: string;
@@ -38,6 +50,16 @@ export interface OcrOptions {
   /** 截图缩放后的宽高（坐标系基准）。 */
   width: number;
   height: number;
+  /**
+   * AUTO 一个词都没给出时，是否补跑一次单行模式（PSM.SINGLE_LINE）。默认 true。
+   *
+   * 为什么需要：AUTO 对**单行字幕**会完全失效——实测合成字幕 8 帧全空，
+   * 还回报 conf=95 的假高置信度；换 SINGLE_LINE 反而一字不差。
+   * 只对「原本一个词都没有」的情况补跑，不会让已有结果变差。
+   */
+  retrySingleLine?: boolean;
+  /** 补跑结果的置信度门槛（0-100）；低于它视作幻觉，宁可诚实说没读出来。 */
+  singleLineMinConf?: number;
 }
 
 /** 语言码归一化：WinRT 的 zh-Hans 与 tesseract 的 chi_sim 都接受。 */
@@ -120,15 +142,18 @@ export async function disposeOcr(): Promise<void> {
   }
 }
 
-export async function ocrNative(imageB64: string, opts: OcrOptions): Promise<OcrWord[]> {
-  const langs = resolveOcrLangs(opts.lang);
-  const cachePath = opts.cacheDir || join(tmpdir(), 'localvision-tessdata');
-  const worker = await getWorker(langs, cachePath);
-  const { data } = await worker.recognize(Buffer.from(imageB64, 'base64'), {}, { blocks: true, text: true });
-  const W = opts.width;
-  const H = opts.height;
-  if (!W || !H) return [];
+/** 单行回落命中的次数（诊断用）：它代表「本来会空手而归，补跑救回来了」。 */
+let ocrSingleLineHits = 0;
+/** 最近一次识别实际走的模式，排错时很有用。 */
+let ocrLastPsm: 'auto' | 'single-line' | 'single-line-rejected' = 'auto';
 
+/** 读 OCR 内部统计，供诊断面板展示。 */
+export function ocrDiagnostics(): { singleLineHits: number; lastPsm: string } {
+  return { singleLineHits: ocrSingleLineHits, lastPsm: ocrLastPsm };
+}
+
+/** 从 tesseract 的版面层级里提词（只有 AUTO 模式才有 blocks/paragraphs/lines）。 */
+function wordsFromBlocks(data: { blocks?: unknown }, W: number, H: number): OcrWord[] {
   const words: OcrWord[] = [];
   let line = 0;
   for (const block of (data.blocks ?? []) as any[]) {
@@ -151,6 +176,54 @@ export async function ocrNative(imageB64: string, opts: OcrOptions): Promise<Ocr
     }
   }
   return words;
+}
+
+export async function ocrNative(imageB64: string, opts: OcrOptions): Promise<OcrWord[]> {
+  const langs = resolveOcrLangs(opts.lang);
+  const cachePath = opts.cacheDir || join(tmpdir(), 'localvision-tessdata');
+  const worker = await getWorker(langs, cachePath);
+  const W = opts.width;
+  const H = opts.height;
+  if (!W || !H) return [];
+  const buf = Buffer.from(imageB64, 'base64');
+
+  // 1) 主识别：AUTO，带版面坐标——UI 截图（多块多行）的主场。
+  const first = await worker.recognize(buf, {}, { blocks: true, text: true });
+  const words = wordsFromBlocks(first.data, W, H);
+  if (words.length) {
+    ocrLastPsm = 'auto';
+    return words;
+  }
+
+  // 2) 整张图一个字都没有 → 按「单行字幕」补跑一次。
+  //    AUTO 对单行字幕会完全失效（实测 8 帧全空，还回报 conf=95 的假高置信度）。
+  //    只在原本为空时补跑，不会让已有结果变差。
+  if (opts.retrySingleLine === false) {
+    ocrLastPsm = 'auto';
+    return [];
+  }
+
+  await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_LINE });
+  try {
+    const retry = await worker.recognize(buf, {}, { text: true });
+    const text = String(retry.data.text ?? '').trim();
+    const conf = Math.round(retry.data.confidence ?? 0);
+    const min = typeof opts.singleLineMinConf === 'number' ? opts.singleLineMinConf : SINGLE_LINE_MIN_CONF;
+    if (!text || conf < min) {
+      // 置信度太低 = 把画面噪点读成了字（CG 实测 conf 0~15）。
+      // 宁可诚实说「没读出来」，也别拿碎片误导模型——这跟「不加全局置信度过滤」不冲突：
+      // 这里守的是「补跑这条新路径」，不是去动 AUTO 已经给出的结果。
+      ocrLastPsm = 'single-line-rejected';
+      return [];
+    }
+    ocrSingleLineHits += 1;
+    ocrLastPsm = 'single-line';
+    // 单行模式不做版面分析（blocks 为空），坐标无从谈起，标记为无框。
+    return [{ text, x: 0, y: 0, w: 0, h: 0, line: 0, noBox: true }];
+  } finally {
+    // worker 是模块级单例，PSM 不还原会污染后续每一次识别。
+    await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO });
+  }
 }
 
 /** 从 PNG/JPEG 字节里读宽高（截图坐标系的基准）。 */
@@ -225,8 +298,15 @@ export function ocrItemsMapped(words: OcrWord[], map: OcrPointMap): OcrItem[] {
 export function ocrToLocatedTextMapped(words: OcrWord[], map: OcrPointMap): string {
   if (!words.length) return '';
   const reading = ocrToText(words);
-  const located = ocrItemsMapped(words, map).map((it) => `- ${it.text} @ (${it.cx}, ${it.cy})`).join('\n');
-  return `可见文字(阅读顺序):\n${reading}\n\n关键文字及中心坐标(截图像素):\n${located}`;
+  // 补跑（noBox）的词没有坐标，不能混进「可直接点击」的清单里——会点错地方。
+  const boxed = words.filter((w) => !w.noBox);
+  if (!boxed.length) {
+    return `可见文字(阅读顺序):\n${reading}\n\n（这些字由单行模式补读，没有位置信息，不能用于点击）`;
+  }
+  const located = ocrItemsMapped(boxed, map).map((it) => `- ${it.text} @ (${it.cx}, ${it.cy})`).join('\n');
+  const noBox = words.length - boxed.length;
+  const tail = noBox > 0 ? `\n\n（另有 ${noBox} 个词没有位置信息）` : '';
+  return `可见文字(阅读顺序):\n${reading}\n\n关键文字及中心坐标(截图像素):\n${located}${tail}`;
 }
 
 /** 阅读顺序文本 + 每个词的截图像素中心坐标（localvision_see 用）。 */

@@ -43,10 +43,12 @@ import {
   autoOcrLang,
   disposeOcr,
   imageSize,
+  ocrDiagnostics,
   ocrNative,
   ocrToText,
   ocrToLocatedTextMapped,
   resolveOcrLangs,
+  SINGLE_LINE_MIN_CONF,
   systemLocale,
   type OcrOptions,
   type OcrWord,
@@ -69,6 +71,21 @@ export interface LocalVisionSection {
   enabled: boolean;
   /** OCR 语言：auto（跟随系统语言）/ chi_sim / eng / chi_sim+eng；也接受 zh-Hans / en-US 映射。 */
   ocrLang: string;
+  /**
+   * 常规识别一个字都没读出来时，补跑一次「单行」模式。默认 true。
+   *
+   * 常规模式（PSM.AUTO）对**单行字幕会完全失效**：实测合成字幕 8 帧全空，
+   * 还回报 conf=95 的假高置信度；换单行模式反而一字不差（conf 63~93）。
+   * 视频 / CG / 教程的字幕绝大多数是单行——不补这一下，整段视频会被读成空白。
+   * 补跑不做版面分析，拿到的文字**没有坐标**，输出时会如实说明、不用于点击。
+   */
+  ocrSingleLineFallback: boolean;
+  /**
+   * 补跑结果的置信度门槛（0~100），低于它视作幻觉、宁可说没读出来。默认 40。
+   * 实测分得很干净：真字幕 63~93，CG 画面噪点被读成的碎片只有 0~15。
+   * 这道门只守「补跑」这条新增路径，不动常规模式已经给出的结果。
+   */
+  ocrSingleLineMinConf: number;
   /** 截图缩放上限；与内置 cua 的 screenshot.maxWidth 对齐，坐标才能直接复用。 */
   screenshotMaxWidth: number;
   screenshotMaxHeight: number;
@@ -504,6 +521,24 @@ function ocrConfigGroups(lang: string): ConfigGroup[] {
             description: zh ? 'auto（跟随系统语言）/ chi_sim / eng / chi_sim+eng' : 'auto (follow system locale) / chi_sim / eng / chi_sim+eng',
             'x-hot': true,
           },
+          [`${K}.ocrSingleLineFallback`]: {
+            type: 'boolean',
+            title: zh ? '补读单行字幕' : 'Retry as single line',
+            description: zh
+              ? '常规识别一个字都没读出来时，再按「一行字」的模式补读一次。\n视频、教程、带字幕的画面基本都是一行一行出现的，不开会整段读成空白。\n补读出来的文字没有位置信息，不能用来点击。'
+              : 'When normal recognition finds nothing, retry treating the frame as a single line of text.\nSubtitles in videos and tutorials are almost always single-line; without this they read as blank.\nText recovered this way has no position data and cannot be used for clicking.',
+            'x-hot': true,
+          },
+          [`${K}.ocrSingleLineMinConf`]: {
+            type: 'integer',
+            title: zh ? '补读置信度门槛' : 'Retry confidence floor',
+            minimum: 0,
+            maximum: 100,
+            description: zh
+              ? '补读结果的把握低于这个值就当没读出来。默认 40：真字幕通常 63~93，而游戏 / 动画画面被误读成的碎片只有 0~15。\n调高更保守（宁可空着），调低更容易捞到些字但也可能捞到乱码。'
+              : 'Discard retry results below this confidence. Default 40: real subtitles score 63~93, while noise misread from game/animation frames scores only 0~15.\nRaise it to be stricter; lower it to catch more text at the risk of garbage.',
+            'x-hot': true,
+          },
           [`${K}.onOcrEmpty`]: {
             type: 'string',
             title: zh ? 'OCR 兜底方式' : 'OCR fallback',
@@ -601,6 +636,9 @@ function defaultLocalVisionSection(): LocalVisionSection {
   return {
     enabled: false,
     ocrLang: 'auto',
+    // 字幕是单行，常规模式读不出来——默认补跑，让视频 / 教程不至于整段空白。
+    ocrSingleLineFallback: true,
+    ocrSingleLineMinConf: SINGLE_LINE_MIN_CONF,
     screenshotMaxWidth: 1280,
     screenshotMaxHeight: 800,
     hookIntercept: true,
@@ -745,6 +783,10 @@ class LocalVisionWorld {
       cacheDir: this.cacheDir,
       width: img.scaledWidth,
       height: img.scaledHeight,
+      // AUTO 一个词都没有时补跑单行模式：视频 / CG / 教程的字幕大多是单行，
+      // 不补这一下会整段读成空白。补跑的词没有坐标，输出时会如实说明。
+      retrySingleLine: this.cfg.ocrSingleLineFallback !== false,
+      singleLineMinConf: this.cfg.ocrSingleLineMinConf,
     };
   }
 
@@ -844,12 +886,11 @@ class LocalVisionWorld {
         words = cached;
         status = words.length ? 'hit' : 'empty';
       } else {
-        const r = await this.ocrWithStatus(Buffer.from(bytes).toString('base64'), {
-          lang: this.cfg.ocrLang || undefined,
-          cacheDir: this.cacheDir,
-          width: dims.w,
-          height: dims.h,
-        });
+        // 走同一个 ocrOptions：让「单行补跑」在硬拦截路径上也受同一套配置控制，别两套行为。
+        const r = await this.ocrWithStatus(
+          Buffer.from(bytes).toString('base64'),
+          this.ocrOptions({ scaledWidth: dims.w, scaledHeight: dims.h }),
+        );
         status = r.status;
         words = r.words;
         err = r.error ?? '';
@@ -1235,9 +1276,13 @@ class LocalVisionWorld {
     const locale = systemLocale();
     const resolved = resolveOcrLangs(cfg.ocrLang);
     lines.push(`系统: ${process.platform} ${process.arch}, Node ${process.versions.node}, locale ${locale || '(未知)'}`);
+    const ocd = ocrDiagnostics();
     lines.push(
       `OCR: 配置 ${cfg.ocrLang || '(空)'} → 实际 ${resolved}; 调用 ${this.ocrCalls} 次, 最近 ${this.lastOcrMs}ms / ${this.lastOcrWords} 词` +
-        (this.gate.ocrFailed ? `; 失败 ${this.gate.ocrFailed} 次 (最近: ${this.lastOcrError || '未知'})` : ''),
+        (this.gate.ocrFailed ? `; 失败 ${this.gate.ocrFailed} 次 (最近: ${this.lastOcrError || '未知'})` : '') +
+        // 补读命中数单独列：它代表「本来会空手而归，靠单行模式救回来了」
+        (ocd.singleLineHits ? `; 单行补读命中 ${ocd.singleLineHits} 次` : '') +
+        `; 最近模式 ${ocd.lastPsm}`,
     );
 
     let cachedLangs: string[] = [];
