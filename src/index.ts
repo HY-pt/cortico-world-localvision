@@ -654,8 +654,23 @@ class LocalVisionWorld {
   async start(host: WorldHost): Promise<void> {
     this.host = host;
     const hookHost = host as HookHost;
+    // 能力检测写回内联判断：TS 只对 instanceof/typeof 的**内联**条件窄化可选方法，
+    // 抽成变量后 659 行的调用会被判为 possibly undefined。
+    const hookSupported = typeof hookHost.registerToolOutcomeTransform === 'function';
     if (this.cfg.hookIntercept && typeof hookHost.registerToolOutcomeTransform === 'function') {
       this.unregisterHook = hookHost.registerToolOutcomeTransform((out, info) => this.transformToolOutcome(out, info));
+    }
+    // 钩子状态必须在启动日志里留痕：宿主缺 hook 时这里是**静默降级**——配置页照常显示"开"、
+    // 实际一张图都不拦，而 Coopanion 每次升级都会冲掉补丁，升级后必然走到这条分支。
+    // 不打这条日志，用户只会以为自己还被保护着。
+    if (this.unregisterHook) {
+      host.log.info('localvision: 硬拦截已生效（核心 hook 已注册）');
+    } else if (this.cfg.hookIntercept) {
+      host.log.warn('localvision: 硬拦截未生效——宿主缺少核心 hook（Coopanion 升级会冲掉补丁）', {
+        detail: hookSupported
+          ? 'hook 在但注册失败'
+          : '到本地视觉 → 诊断页点「打核心补丁」，然后重启 Coopanion',
+      });
     }
     // 清掉上一轮运行遗留的截屏临时文件：截图缓存的生命周期就是一次 Coopanion 运行，
     // 重启即清空（OCR 文字缓存在内存里，进程退了自然也没）。不 await：不能拖慢启动。
@@ -1140,7 +1155,11 @@ class LocalVisionWorld {
 
     const tips: string[] = [];
     if (!cachedLangs.includes(resolved)) tips.push(`语言包 ${resolved} 还没缓存，首次 OCR 会下载`);
-    if (!this.unregisterHook) tips.push('想要硬拦截：确认打了 patches/core-tool-outcome-hook.patch 并重启');
+    // 分两种"没注册"：开关开着却没生效（宿主缺 hook，多半是升级冲掉补丁）与开关本就没开，
+    // 修法完全不同，混成一句会让人照着"确认打了 patch"白查半天。
+    if (this.cfg.hookIntercept && !this.unregisterHook)
+      tips.push('硬拦截开着但没生效：宿主缺核心 hook（多半是 Coopanion 升级冲掉了补丁）——点本页「打核心补丁」，重启 Coopanion 即可恢复');
+    else if (!this.unregisterHook) tips.push('想要硬拦截：打开本页的「硬拦截截图」开关并重启 World');
     if (afterAction === true) {
       tips.push(
         this.unregisterHook
@@ -1655,9 +1674,13 @@ class LocalVisionWorld {
 
   envPromptVars(): Record<string, string> {
     return {
+      // 三态：生效 / 开关开着却没生效（宿主缺 hook，多半是升级冲掉补丁）/ 开关本就没开。
+      // 第二种必须说清"是坏了不是没开"，否则模型会一直以为用户没开这个开关，不会提醒去修。
       'localvision.intercept': this.unregisterHook
         ? '截图已经被我拦在本机啦：就算调用 pet_cua_screenshot，拿到的也只是本机读出来的文字，不会把图传出去。正常用就行。'
-        : '硬拦截还没开哦，所以不要调用 pet_cua_screenshot / pet_cua_zoom（会把图传出去）；做动作的时候记得传 screenshot:false。',
+        : this.cfg.hookIntercept
+          ? '硬拦截现在没生效哦：开关是开着的，但宿主这边少了个核心 hook（多半是 Coopanion 升级把补丁冲掉了）。这段时间还是不要调用 pet_cua_screenshot / pet_cua_zoom（图会真的传出去），做动作记得传 screenshot:false；要是我常常得看屏幕，就提醒用户去「本地视觉 → 诊断」点一下「打核心补丁」，重启 Coopanion 就好啦。'
+          : '硬拦截还没开哦，所以不要调用 pet_cua_screenshot / pet_cua_zoom（会把图传出去）；做动作的时候记得传 screenshot:false。',
       'localvision.localmodel':
         this.cfg.localModelEnabled && this.cfg.localModelBaseUrl.trim() && this.cfg.localModelName.trim()
           ? '想看懂画面内容（游戏、图片、图表、视频里某一幕），用 localvision_describe，我会让配好的视觉模型把画面讲给我听。出问题先调 localvision_doctor。'
