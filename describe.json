@@ -169,57 +169,6 @@
       "tags": [
         "read"
       ]
-    },
-    {
-      "name": "localvision_watch",
-      "description": "看视频 / 录屏：在本机用 ffmpeg 抽出「画面有变化」的帧，逐帧跑本机 OCR，产出「时刻 → 画面文字」的时间线文本。默认只返回文字、不上传任何图片（省 token）；attachImages=true 时才额外附上「OCR 没读出文字」的纯画面帧（游戏、动画、演示画面等），最多 3 张。适合回答「这段录屏里发生了什么」「第几分钟出现了什么文字」；需要系统装有 ffmpeg（没有会直接报安装指引）。不适合：高速连续动作（抽帧会漏细节）、纯语音内容（不转写音频）。注意 OCR 一帧约 1.8s，帧数直接决定耗时。⚠️ OCR 只认印刷体文字，在 CG / 动画 / 游戏画面上常常读不出、甚至读出乱字——这是能力边界不是故障；这类内容想「看懂画面」请直接传 attachImages:true 让模型看图，别拿时间线上的几行乱字猜剧情。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "视频文件的绝对路径（mp4 / mkv / webm / mov 等 ffmpeg 能解的都行）。"
-          },
-          "scene": {
-            "type": "number",
-            "minimum": 0.05,
-            "maximum": 1,
-            "description": "场景变化阈值，默认 0.3。越小越敏感、抽到的帧越多；画面切换快的录屏建议 0.15~0.25，画面几乎静止的建议调大。"
-          },
-          "maxFrames": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120,
-            "description": "最多 OCR 多少帧，默认 24。OCR 一帧约 1.8s，这个数直接决定本次调用耗时；超出时按时间均匀抽稀（保留首尾帧）。"
-          },
-          "intervalSec": {
-            "type": "number",
-            "minimum": 0.1,
-            "maximum": 60,
-            "description": "兜底抽帧间隔（秒），默认 1。画面几乎不变的静态录屏（PPT 讲解、文档演示）用场景检测会一帧都选不出，此时自动改为按这个间隔均匀抽帧。"
-          },
-          "fromSec": {
-            "type": "number",
-            "minimum": 0,
-            "description": "只看从这一秒起的片段（秒，可带小数）；省略从头。"
-          },
-          "toSec": {
-            "type": "number",
-            "minimum": 0,
-            "description": "只看到这一秒为止（秒，可带小数）；省略到尾。"
-          },
-          "attachImages": {
-            "type": "boolean",
-            "description": "默认 false（只返回时间线文字，零图片开销）。设为 true 时，额外附上「OCR 没读出文字」的帧原图（纯画面，值得让模型看图），最多 3 张；会消耗 token。"
-          }
-        },
-        "required": [
-          "path"
-        ]
-      },
-      "tags": [
-        "read"
-      ]
     }
   ],
   "events": []

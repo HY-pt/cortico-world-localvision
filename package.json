@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-localvision",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "main": "./src/index.ts",
   "description": "让 AI 助手能看懂你的电脑屏幕，但截图全程只留在你电脑上、不上传云端——既保护隐私，又省下每次看屏的流量与费用。要看图标、游戏、图片这类只有画面没有文字的内容时，可接一个本地或在线视觉模型；也能拦住其他工具偷偷把截图发出去。",

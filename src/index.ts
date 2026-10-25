@@ -323,7 +323,7 @@ const ROUTE_REASON: Record<string, string> = {
   coop: '优先级设为 Coopanion 模型商',
 };
 
-const TOOL_DECLS: readonly ToolDescribe[] = [
+const ALL_TOOL_DECLS: readonly ToolDescribe[] = [
   {
     name: 'localvision_see',
     description:
@@ -445,6 +445,21 @@ const TOOL_DECLS: readonly ToolDescribe[] = [
     tags: ['read'],
   },
 ];
+
+/**
+ * 0.4.0 功能总开关 —— 0.3.x 发布期间保持 false。
+ *
+ * 只「静默隐藏」、不删代码：关掉时工具不进 describe.tools（describe.json 不会生成它、
+ * 模型看不到、tools() 也不会绑定 handler）、环境提示词不渲染、诊断不列这一项。
+ * 发 0.4.0 时把这里改回 true 就整体启用，不必把代码搬回来；后续 0.4.x 新功能
+ * 同样在 ALL_TOOL_DECLS 里加声明、再加一个同类开关，就能继续往上叠。
+ */
+const ENABLE_WATCH = false;
+
+/** 本版本真正对外暴露的工具声明：describe.tools 与 tools() 共用这一份，两者必须一致。 */
+const TOOL_DECLS: readonly ToolDescribe[] = ENABLE_WATCH
+  ? ALL_TOOL_DECLS
+  : ALL_TOOL_DECLS.filter((d) => d.name !== 'localvision_watch');
 
 /**
  * 实验性功能登记表：配置页「实验性功能」组与诊断面板的错误代码共用这一份。
@@ -1927,10 +1942,13 @@ class LocalVisionWorld {
         this.cfg.onOcrEmpty === 'image'
           ? '当前「OCR 兜底方式」是「图片」：读不出字的时候（游戏、视频、纯画面），我会把截图发给用户已配的视觉模型去看（会消耗 token，画面也会上传），这样我就能讲出画面里有什么。'
           : '当前「OCR 兜底方式」是「文本」：读不出字的时候，我只把已经读到的字告诉你，不发图、不花钱——代价是画面里有什么我就看不到啦。',
-      // 视频能力取决于系统有没有 ffmpeg，提示词必须和工具真实行为一致（没装就别让用户白试）。
-      'localvision.watch': this.ffmpegReady()
-        ? '我可以看视频和录屏哦：用 localvision_watch，把视频文件的完整路径传给我就行。我会在本机挑出画面有变化的那些瞬间来读字，给你一份「第几秒 → 屏幕上写着什么」的清单，默认一张图都不传。'
-        : '本机没装 ffmpeg，我暂时看不了视频和录屏啦；如果用户想让我看录屏，就老实说明，然后引导他先装 ffmpeg（Windows：winget install Gyan.FFmpeg）。',
+      // 0.4.0 功能：开关关掉时渲染成空串，模板里的 {{localvision.watch}} 整段消失，
+      // 模型就不会去调用一个不在工具清单里的能力。开关打开时才看 ffmpeg（提示词必须与工具真实行为一致）。
+      'localvision.watch': !ENABLE_WATCH
+        ? ''
+        : this.ffmpegReady()
+          ? '我可以看视频和录屏哦：用 localvision_watch，把视频文件的完整路径传给我就行。我会在本机挑出画面有变化的那些瞬间来读字，给你一份「第几秒 → 屏幕上写着什么」的清单，默认一张图都不传。'
+          : '本机没装 ffmpeg，我暂时看不了视频和录屏啦；如果用户想让我看录屏，就老实说明，然后引导他先装 ffmpeg（Windows：winget install Gyan.FFmpeg）。',
     };
   }
 
@@ -2158,7 +2176,10 @@ class LocalVisionWorld {
             { name: 'localvision.intercept', description: zh ? '硬拦截是否生效' : 'Whether hard interception is active' },
             { name: 'localvision.localmodel', description: zh ? '视觉模型是否可用' : 'Whether a vision model is available' },
             { name: 'localvision.ocrfallback', description: zh ? 'OCR 兜底方式（文本 / 图片）' : 'OCR fallback mode (text / image)' },
-            { name: 'localvision.watch', description: zh ? '能否看视频 / 录屏（ffmpeg 是否可用）' : 'Whether video watching is available (ffmpeg)' },
+            // 0.4.0 功能：开关关掉时不对外声明这个变量（模板占位仍在，渲染结果为空串）。
+            ...(ENABLE_WATCH
+              ? [{ name: 'localvision.watch', description: zh ? '能否看视频 / 录屏（ffmpeg 是否可用）' : 'Whether video watching is available (ffmpeg)' }]
+              : []),
           ],
         },
       ],
