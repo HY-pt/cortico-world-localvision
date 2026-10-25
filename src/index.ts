@@ -1330,7 +1330,14 @@ class LocalVisionWorld {
     }
     lines.push(`屏幕: ${screen}`);
 
-    const hook = this.unregisterHook ? '已注册（核心 hook 生效）' : '未注册（框架没打 hook 或 hookIntercept=false）';
+    // 三态要说清：生效 / 开关开着但进程里没钩子（补丁在磁盘上↔没打，修法不同）/ 开关没开。
+    const hook = this.unregisterHook
+      ? '已注册（核心 hook 生效）'
+      : !this.cfg.hookIntercept
+        ? '未注册（硬拦截开关已关闭）'
+        : this.hostPatchOnDisk() === true
+          ? '未生效（补丁已打在磁盘上——重启 Coopanion 后生效，不用再打）'
+          : '未生效（宿主缺核心 hook，多半是 Coopanion 升级冲掉了补丁——点本页「打核心补丁」再重启）';
     lines.push(`硬拦截: ${hook}`);
     // 拦截计量：兜底次数单独列出——它直接对应 token 成本，是用户最该盯的数字。
     const g = this.gate;
@@ -1372,11 +1379,17 @@ class LocalVisionWorld {
 
     const tips: string[] = [];
     if (!cachedLangs.includes(resolved)) tips.push(`语言包 ${resolved} 还没缓存，首次 OCR 会下载`);
-    // 分两种"没注册"：开关开着却没生效（宿主缺 hook，多半是升级冲掉补丁）与开关本就没开，
-    // 修法完全不同，混成一句会让人照着"确认打了 patch"白查半天。
-    if (this.cfg.hookIntercept && !this.unregisterHook)
-      tips.push('硬拦截开着但没生效：宿主缺核心 hook（多半是 Coopanion 升级冲掉了补丁）——点本页「打核心补丁」，重启 Coopanion 即可恢复');
-    else if (!this.unregisterHook) tips.push('想要硬拦截：打开本页的「硬拦截截图」开关并重启 World');
+    // 分三种"没生效"：补丁已在磁盘上只差重启 / 宿主缺 hook（多半是升级冲掉）/ 开关本就没开。
+    // 前两种修法完全不同，混成一句会让人白白重打补丁、却始终想不起来要重启。
+    if (this.cfg.hookIntercept && !this.unregisterHook) {
+      tips.push(
+        this.hostPatchOnDisk() === true
+          ? '硬拦截还没生效：补丁已经打在磁盘上了，但当前进程是在打补丁之前启动的——重启 Coopanion 即可，不用再打一次'
+          : '硬拦截开着却没生效：宿主缺核心 hook（多半是 Coopanion 升级冲掉了补丁）——点本页「打核心补丁」，然后重启 Coopanion',
+      );
+    } else if (!this.unregisterHook) {
+      tips.push('想要硬拦截：打开本页的「硬拦截截图」开关并重启 World');
+    }
     if (afterAction === true) {
       tips.push(
         this.unregisterHook
@@ -2172,6 +2185,24 @@ class LocalVisionWorld {
   }
 
   /**
+   * 宿主源码（磁盘）里有没有钩子——**与「当前进程里钩子是否生效」是两件事**：
+   * 补丁写的是磁盘上的 .ts，宿主进程启动时才加载，打完必须重启才生效。
+   * 升级后典型状态就是「磁盘有、进程没有」，只有分开看才能给出「重启即可」而不是「再去打一次」。
+   * 返回 null = 找不到宿主目录（便携版/自定义路径/非 Windows），此时不瞎判断，走通用文案。
+   */
+  private hostPatchOnDisk(): boolean | null {
+    const appData = typeof process.env.LOCALAPPDATA === 'string' ? process.env.LOCALAPPDATA : '';
+    if (!appData) return null;
+    const file = join(appData, 'Programs', 'Coopanion', 'resources', 'app', 'build', 'cortico', 'src', 'core', 'loop.ts');
+    try {
+      if (!existsSync(file)) return null;
+      return readFileSync(file, 'utf8').includes('registerToolOutcomeTransform');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 诊断面板「打核心补丁」按钮：跑同一个幂等脚本（scripts/apply-hook-patch.mjs）。
    * 脚本找不到宿主目录时也返回 ok=true（提示手动跑），不让面板报红。
    */
@@ -2185,13 +2216,20 @@ class LocalVisionWorld {
       const patched = /✓ 写入/.test(output);
       const skipped = /已打过/.test(output) && !patched;
       const notFound = /未找到/.test(output);
-      const detail = patched
-        ? '补丁已打好（改了 3 个核心文件，备份在旁）——重启 Coopanion 后生效。'
+      const base = patched
+        ? '补丁已打好（改了 3 个核心文件，备份在旁）。'
         : skipped
           ? '补丁已在位，无需重复打。'
           : notFound
             ? '没找到 Coopanion 安装目录；如在便携/自定义路径，请在插件目录手动跑 npm run patch:hook -- <cortico/src 路径>。'
             : '补丁未生效（宿主版本可能不匹配）；可手动跑 npm run patch:hook 看详细输出。';
+      // 打了补丁 ≠ 立刻生效：脚本改的是磁盘上的源码，宿主进程启动时才加载。
+      // 只要当前进程里没有钩子，不管这次是「刚写入」还是「已在位」，都要把重启说出口——
+      // 「已在位，无需重复打」极易被读成「已经在拦了」，然后就一直不重启、一直不生效。
+      const restart = this.unregisterHook
+        ? ''
+        : '补丁改的是磁盘上的源码，宿主启动时才加载——重启 Coopanion 后才会生效（不用重复打）。';
+      const detail = [base, restart].filter(Boolean).join(' ');
       return { ok: true, patched, detail, output: output.slice(-800) };
     } catch (e) {
       return { ok: false, patched: false, detail: (e as Error).message, output: output.slice(-800) };
